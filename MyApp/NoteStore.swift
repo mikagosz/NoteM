@@ -11,6 +11,9 @@ final class NoteStore {
         static let meta = "meta.json"
     }
 
+    /// Per-category metadata file (currently just the cover colour).
+    private static let categoryMetaFile = ".category.json"
+
     /// Reserved top-level directories under the store root.
     static let trashDir = ".trash"
     static let historyDir = ".history"
@@ -262,6 +265,31 @@ final class NoteStore {
         let contentURL = url(forFolderPath: note.folderPath)
             .appendingPathComponent(FileName.content)
         return (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
+    }
+
+    // MARK: - Category cover colour
+
+    /// Metadata stored per category folder.
+    private struct CategoryMeta: Codable { var coverColorID: String? }
+
+    /// Reads the cover-colour theme id for a category folder, if set.
+    func categoryColorID(forCategory category: String) -> String? {
+        guard !category.isEmpty else { return nil }
+        let metaURL = url(forFolderPath: category).appendingPathComponent(Self.categoryMetaFile)
+        guard let data = try? Data(contentsOf: metaURL),
+              let meta = try? decoder.decode(CategoryMeta.self, from: data) else { return nil }
+        return meta.coverColorID
+    }
+
+    /// Sets (or clears, with `nil`) the cover-colour theme id for a category.
+    func setCategoryColorID(_ id: String?, forCategory category: String) {
+        guard !category.isEmpty else { return }
+        let folderURL = url(forFolderPath: category)
+        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        let metaURL = folderURL.appendingPathComponent(Self.categoryMetaFile)
+        if let data = try? encoder.encode(CategoryMeta(coverColorID: id)) {
+            try? data.write(to: metaURL)
+        }
     }
 
     /// Moves every top-level entry (note folders, `.trash`, `.history`) from one
