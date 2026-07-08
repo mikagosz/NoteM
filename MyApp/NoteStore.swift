@@ -137,6 +137,15 @@ final class NoteStore {
         return moved
     }
 
+    /// Rewrites only `meta.json` for a note (e.g. after a tags change), leaving
+    /// `note.md` and `modified` untouched.
+    @discardableResult
+    func updateMeta(_ note: Note) -> Note {
+        let folderURL = url(forFolderPath: note.folderPath)
+        writeMeta(note.meta, to: folderURL)
+        return note
+    }
+
     /// Deletes a note's entire folder from disk.
     func deleteNote(_ note: Note) {
         let folderURL = url(forFolderPath: note.folderPath)
