@@ -8,6 +8,10 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     weak var textView: NSTextView?
     /// Called after any user edit, with the current attributed content.
     var onChange: ((NSAttributedString) -> Void)?
+    /// Supplies note titles for `[[` wiki-link autocompletion.
+    var titlesProvider: () -> [String] = { [] }
+    /// Called when a wiki link is clicked, with the linked note's title.
+    var onOpenWikiLink: ((String) -> Void)?
 
     private var storedContent = NSAttributedString()
     private var isSettingText = false
@@ -38,6 +42,13 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         guard !isSettingText, let textView else { return }
         onChange?(textView.attributedString())
+    }
+
+    /// Follow clicked wiki links (other schemes fall through to the default).
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, let title = MarkdownStyler.wikiTitle(from: url) else { return false }
+        onOpenWikiLink?(title)
+        return true
     }
 
     // MARK: - Inline formatting
@@ -279,7 +290,95 @@ final class NoteTextView: NSTextView {
     /// of moving the caret.
     override func mouseDown(with event: NSEvent) {
         if toggleChecklistIfCheckboxClicked(event) { return }
+        if openWikiLinkIfClicked(event) { return }
         super.mouseDown(with: event)
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        maybeShowWikiCompletion()
+    }
+
+    // MARK: - Wiki links
+
+    /// If the click landed on a `[[Title]]` link, open that note instead of
+    /// moving the caret.
+    private func openWikiLinkIfClicked(_ event: NSEvent) -> Bool {
+        guard let storage = textStorage, storage.length > 0,
+              let layoutManager, let textContainer else { return false }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let containerPoint = CGPoint(
+            x: point.x - textContainerInset.width,
+            y: point.y - textContainerInset.height
+        )
+        let charIndex = layoutManager.characterIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceBetweenInsertionPoints: nil
+        )
+        guard charIndex < storage.length,
+              let url = storage.attribute(.link, at: charIndex, effectiveRange: nil) as? URL,
+              let title = MarkdownStyler.wikiTitle(from: url) else { return false }
+
+        // Only count it as a hit if the click is actually within the glyph.
+        let glyphs = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: charIndex, length: 1),
+            actualCharacterRange: nil
+        )
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+        rect.origin.x += textContainerInset.width
+        rect.origin.y += textContainerInset.height
+        guard rect.contains(point) else { return false }
+
+        controller?.onOpenWikiLink?(title)
+        return true
+    }
+
+    /// When the caret sits right after a freshly typed `[[`, pop up a menu of
+    /// note titles; picking one inserts a styled `[[Title]]` link.
+    private func maybeShowWikiCompletion() {
+        let selected = selectedRange()
+        guard selected.length == 0, selected.location >= 2 else { return }
+        let ns = string as NSString
+        guard ns.substring(with: NSRange(location: selected.location - 2, length: 2)) == "[[" else { return }
+        let titles = controller?.titlesProvider() ?? []
+        guard !titles.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in self?.presentWikiCompletion(titles: titles) }
+    }
+
+    private func presentWikiCompletion(titles: [String]) {
+        let caret = selectedRange().location
+        let ns = string as NSString
+        guard caret >= 2, ns.substring(with: NSRange(location: caret - 2, length: 2)) == "[[" else { return }
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for title in titles.prefix(50) {
+            let item = NSMenuItem(title: title, action: #selector(insertWikiSelection(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = title
+            menu.addItem(item)
+        }
+
+        let rect = firstRect(forCharacterRange: NSRange(location: caret, length: 0), actualRange: nil)
+        guard let window else { return }
+        let windowPoint = window.convertPoint(fromScreen: NSPoint(x: rect.minX, y: rect.minY))
+        let viewPoint = convert(windowPoint, from: nil)
+        menu.popUp(positioning: nil, at: viewPoint, in: self)
+    }
+
+    @objc private func insertWikiSelection(_ sender: NSMenuItem) {
+        guard let title = sender.representedObject as? String else { return }
+        let caret = selectedRange().location
+        guard caret >= 2 else { return }
+        let range = NSRange(location: caret - 2, length: 2) // the "[[" already typed
+        let link = MarkdownStyler.wikiLinkAttributed(title: title)
+        guard shouldChangeText(in: range, replacementString: link.string) else { return }
+        textStorage?.replaceCharacters(in: range, with: link)
+        typingAttributes = MarkdownStyler.defaultTypingAttributes // don't keep styling the link
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location + link.length, length: 0))
     }
 
     private func toggleChecklistIfCheckboxClicked(_ event: NSEvent) -> Bool {

@@ -8,6 +8,8 @@ import SwiftUI
 struct NoteDetailView: View {
     let note: Note
     let model: NotesModel
+    /// Opens another note (used by wiki links and the backlinks panel).
+    var openNote: (UUID) -> Void = { _ in }
 
     @State private var controller = RichTextController()
     /// Markdown as last loaded/saved — used to avoid spurious saves.
@@ -26,6 +28,12 @@ struct NoteDetailView: View {
             )
             Divider()
             RichTextEditor(controller: controller)
+
+            let backlinks = model.backlinks(to: note)
+            if !backlinks.isEmpty {
+                Divider()
+                BacklinksPanel(notes: backlinks, onOpen: openNote)
+            }
         }
         .navigationTitle(note.title)
         .task { load() }
@@ -40,6 +48,12 @@ struct NoteDetailView: View {
         loadedMarkdown = markdown
         controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown))
         controller.onChange = { _ in scheduleSave() }
+        controller.titlesProvider = { [model, note] in
+            model.notes.filter { $0.id != note.id && !$0.title.isEmpty }.map(\.title)
+        }
+        controller.onOpenWikiLink = { [model] title in
+            if let target = model.note(forTitle: title) { openNote(target.id) }
+        }
     }
 
     /// Debounced autosave.
@@ -59,6 +73,34 @@ struct NoteDetailView: View {
         guard markdown != loadedMarkdown else { return }
         model.save(note, content: markdown)
         loadedMarkdown = markdown
+    }
+}
+
+/// "Linkuje tutaj" — notes that reference the current note via a wiki link.
+struct BacklinksPanel: View {
+    let notes: [Note]
+    let onOpen: (UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Linkuje tutaj (\(notes.count))", systemImage: "arrow.turn.up.left")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            ForEach(notes) { note in
+                Button {
+                    onOpen(note.id)
+                } label: {
+                    Text(note.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.link)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.3))
     }
 }
 
