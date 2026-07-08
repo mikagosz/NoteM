@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// WYSIWYG editor for a single note. Content is stored on disk as markdown in
 /// `note.md`; in the editor it's an `NSAttributedString`.
@@ -18,8 +19,6 @@ struct NoteDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            EditorToolbar(controller: controller)
-            Divider()
             TagBar(
                 tags: note.tags,
                 suggestions: model.tagCounts.map(\.tag),
@@ -36,17 +35,34 @@ struct NoteDetailView: View {
             }
         }
         .navigationTitle(note.title)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button(action: exportToPDF) {
+                    Label("Eksportuj PDF", systemImage: "arrow.down.doc")
+                }
+                .help("Eksportuj notatkę jako PDF")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button(action: printNote) {
+                    Label("Drukuj", systemImage: "printer")
+                }
+                .help("Drukuj notatkę")
+            }
+        }
         .task { load() }
         .onDisappear {
             saveTask?.cancel()
             flush()
+            controller.hideFloatingPanel()
         }
     }
 
     private func load() {
         let markdown = model.content(for: note)
         loadedMarkdown = markdown
-        controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown))
+        let noteFolder = model.noteFolder(for: note)
+        controller.noteFolder = noteFolder
+        controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder))
         controller.onChange = { _ in scheduleSave() }
         controller.titlesProvider = { [model, note] in
             model.notes.filter { $0.id != note.id && !$0.title.isEmpty }.map(\.title)
@@ -54,6 +70,47 @@ struct NoteDetailView: View {
         controller.onOpenWikiLink = { [model] title in
             if let target = model.note(forTitle: title) { openNote(target.id) }
         }
+        controller.onAddAttachment = { [model, note] fileURL in
+            model.addAttachment(fileURL: fileURL, to: note)
+        }
+    }
+
+    private func exportToPDF() {
+        flush()
+        guard let textView = controller.textView else { return }
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.pdf]
+        savePanel.nameFieldStringValue = note.title + ".pdf"
+        savePanel.begin { response in
+            guard response == .OK, let url = savePanel.url else { return }
+            let info = NSPrintInfo()
+            info.jobDisposition = .save
+            info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = url as NSURL
+            let margins: CGFloat = 72
+            info.leftMargin = margins; info.rightMargin = margins
+            info.topMargin = margins;  info.bottomMargin = margins
+            info.verticalPagination = .automatic
+            info.horizontalPagination = .fit
+            let op = NSPrintOperation(view: textView, printInfo: info)
+            op.showsPrintPanel = false
+            op.showsProgressPanel = false
+            op.run()
+        }
+    }
+
+    private func printNote() {
+        flush()
+        guard let textView = controller.textView else { return }
+        let info = NSPrintInfo()
+        let margins: CGFloat = 72
+        info.leftMargin = margins; info.rightMargin = margins
+        info.topMargin = margins;  info.bottomMargin = margins
+        info.verticalPagination = .automatic
+        info.horizontalPagination = .fit
+        let op = NSPrintOperation(view: textView, printInfo: info)
+        op.showsPrintPanel = true
+        op.showsProgressPanel = true
+        op.run()
     }
 
     /// Debounced autosave.

@@ -37,6 +37,16 @@ final class NotesModel {
     /// Absolute URL of the current store root (local Documents or iCloud Drive).
     var rootURL: URL { store.rootURL }
 
+    /// Absolute URL of a note's folder (for attachment resolution).
+    func noteFolder(for note: Note) -> URL { store.folderURL(for: note) }
+
+    /// Copies a file into the note's `attachments/` subfolder. Returns the
+    /// resulting filename, or `nil` if the copy failed.
+    @discardableResult
+    func addAttachment(fileURL: URL, to note: Note) -> String? {
+        store.addAttachment(fileURL: fileURL, toNote: note)
+    }
+
     /// Supplies the trash auto-clean window (days). Set by the UI from settings.
     var trashRetentionProvider: () -> Int = { 30 }
 

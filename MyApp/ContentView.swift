@@ -15,29 +15,78 @@ import SwiftUI
     }
 }
 
-/// Preferences window with a tab per settings area.
+/// Settings window with a sidebar layout.
 struct SettingsView: View {
     let settings: AppSettings
     let model: NotesModel
 
+    @State private var pane: SettingsPane? = .appearance
+
     var body: some View {
-        TabView {
-            RulesSettingsView(settings: settings)
-                .tabItem { Label("Katalogowanie", systemImage: "folder") }
-            QuickCaptureSettingsView(settings: settings) {
-                QuickCaptureManager.shared.refresh()
+        NavigationSplitView {
+            List(selection: $pane) {
+                ForEach(SettingsPane.allCases, id: \.self) { p in
+                    Label(p.title, systemImage: p.icon).tag(p)
+                }
             }
-            .tabItem { Label("Quick capture", systemImage: "bolt") }
-            AppearanceSettingsView(settings: settings)
-                .tabItem { Label("Wygląd", systemImage: "paintpalette") }
-            SyncSettingsView(settings: settings, model: model) {
-                SyncManager.shared.refresh()
+            .listStyle(.sidebar)
+            .navigationTitle("Ustawienia")
+            .navigationSplitViewColumnWidth(ideal: 180)
+        } detail: {
+            Group {
+                switch pane ?? .appearance {
+                case .general:        GeneralSettingsView()
+                case .appearance:     AppearanceSettingsView(settings: settings)
+                case .categorization: RulesSettingsView(settings: settings)
+                case .quickCapture:
+                    QuickCaptureSettingsView(settings: settings) { QuickCaptureManager.shared.refresh() }
+                case .sync:
+                    SyncSettingsView(settings: settings, model: model) { SyncManager.shared.refresh() }
+                case .trash:          TrashSettingsView(settings: settings)
+                }
             }
-            .tabItem { Label("Synchronizacja", systemImage: "arrow.triangle.2.circlepath") }
-            TrashSettingsView(settings: settings)
-                .tabItem { Label("Kosz", systemImage: "trash") }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 560, height: 420)
+        .frame(width: 700, height: 460)
+    }
+}
+
+private enum SettingsPane: String, Hashable, CaseIterable {
+    case general, appearance, categorization, quickCapture, sync, trash
+
+    var title: String {
+        switch self {
+        case .general:        return "Ogólne"
+        case .appearance:     return "Wygląd"
+        case .categorization: return "Katalogowanie"
+        case .quickCapture:   return "Quick Capture"
+        case .sync:           return "Synchronizacja"
+        case .trash:          return "Kosz"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general:        return "gearshape"
+        case .appearance:     return "paintpalette"
+        case .categorization: return "folder.badge.gearshape"
+        case .quickCapture:   return "bolt.fill"
+        case .sync:           return "arrow.triangle.2.circlepath"
+        case .trash:          return "trash"
+        }
+    }
+}
+
+private struct GeneralSettingsView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "note.text")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("NoteM").font(.largeTitle.bold())
+            Text("Notatki na każdą okazję").foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -52,6 +101,7 @@ struct ContentView: View {
     let settings: AppSettings
     let model: NotesModel
 
+    @Environment(\.openSettings) private var openSettings
     @State private var selection: SidebarSelection?
     /// When set, the notes list shows only notes carrying this tag.
     @State private var tagFilter: String?
@@ -162,12 +212,26 @@ struct ContentView: View {
             .sheet(isPresented: $showConflicts) {
                 ConflictResolverView(model: model) { showConflicts = false }
             }
-            .navigationTitle("NoteM")
-            .toolbar {
-                ToolbarItem {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack {
                     Button(action: addNote) {
                         Label("Nowa notatka", systemImage: "plus")
                     }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    Spacer()
+                }
+                .background(.bar)
+                .overlay(alignment: .top) { Divider() }
+            }
+            .navigationTitle("NoteM")
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button { openSettings() } label: {
+                        Image(systemName: "gear")
+                    }
+                    .help("Ustawienia")
                 }
             }
         } detail: {
