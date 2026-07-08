@@ -52,7 +52,9 @@ final class NoteStore {
     @discardableResult
     func createNote(title: String) -> Note {
         let now = Date()
-        let folderPath = Self.makeFolderPath(for: now)
+        // New notes start unfiled in Inbox; the categorization engine may move
+        // them once they have content (see NotesModel.save).
+        let folderPath = CategoryEngine.inbox + "/" + Self.makeFolderPath(for: now)
         let note = Note(title: title, created: now, modified: now, folderPath: folderPath)
 
         let folderURL = url(forFolderPath: folderPath)
@@ -102,6 +104,37 @@ final class NoteStore {
         writeMeta(updated.meta, to: folderURL)
 
         return updated
+    }
+
+    /// Moves a note's folder to `newFolderPath` (relative to the store root),
+    /// creating intermediate directories and avoiding name collisions. Returns
+    /// the note with its updated `folderPath` (unchanged if the move fails).
+    @discardableResult
+    func moveNote(_ note: Note, toFolderPath newFolderPath: String) -> Note {
+        let source = url(forFolderPath: note.folderPath)
+        guard fileManager.fileExists(atPath: source.path) else { return note }
+
+        var finalPath = newFolderPath
+        var destination = url(forFolderPath: finalPath)
+        try? fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        // Disambiguate if something already sits at the destination.
+        if fileManager.fileExists(atPath: destination.path) {
+            finalPath = newFolderPath + "-" + note.id.uuidString.prefix(8)
+            destination = url(forFolderPath: finalPath)
+        }
+
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+        } catch {
+            return note
+        }
+
+        var moved = note
+        moved.folderPath = finalPath
+        return moved
     }
 
     /// Deletes a note's entire folder from disk.
