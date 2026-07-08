@@ -119,8 +119,10 @@ struct ContentView: View {
                 }
             case .note(let id):
                 if let note = model.notes.first(where: { $0.id == id }) {
-                    NoteDetailView(note: note, model: model)
-                        .id(note.id)
+                    NoteDetailView(note: note, model: model) { targetID in
+                        selection = .note(targetID)
+                    }
+                    .id(note.id)
                 } else {
                     ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
                 }

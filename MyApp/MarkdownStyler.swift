@@ -21,6 +21,37 @@ extension NSAttributedString.Key {
 enum MarkdownStyler {
     static let bulletMarker = "• "
 
+    /// URL scheme used to encode wiki links (`[[Title]]`) as clickable links in
+    /// the editor. The title is carried in the URL's resource specifier.
+    static let wikiScheme = "notem-wiki"
+
+    /// Matches a wiki link `[[Title]]`, capturing the title.
+    static let wikiLinkRegex = try! NSRegularExpression(pattern: "\\[\\[([^\\[\\]]+)\\]\\]")
+
+    /// Builds a clickable, styled attributed string for a wiki link. The visible
+    /// text keeps the `[[Title]]` markers so it round-trips straight to markdown.
+    static func wikiLinkAttributed(title: String) -> NSAttributedString {
+        var attrs = defaultTypingAttributes
+        if let url = wikiURL(for: title) {
+            attrs[.link] = url
+        }
+        attrs[.foregroundColor] = NSColor.linkColor
+        attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        return NSAttributedString(string: "[[\(title)]]", attributes: attrs)
+    }
+
+    static func wikiURL(for title: String) -> URL? {
+        let encoded = title.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? title
+        return URL(string: "\(wikiScheme):\(encoded)")
+    }
+
+    /// Extracts the title from a wiki-link URL, or `nil` if it isn't one.
+    static func wikiTitle(from url: URL) -> String? {
+        guard url.scheme == wikiScheme else { return nil }
+        let specifier = String(url.absoluteString.dropFirst(wikiScheme.count + 1))
+        return specifier.removingPercentEncoding ?? specifier
+    }
+
     static let bodyFont = NSFont.systemFont(ofSize: 14)
 
     static func headerFont(_ level: Int) -> NSFont {
@@ -131,8 +162,32 @@ enum MarkdownStyler {
         return paragraph
     }
 
-    /// Parses inline emphasis (bold/italic) from a single line of markdown.
+    /// Parses a line of inline markdown, turning `[[Title]]` spans into styled
+    /// wiki links and running the rest through the emphasis/link parser.
     private static func attributed(inline markdown: String) -> NSAttributedString {
+        let ns = markdown as NSString
+        let matches = wikiLinkRegex.matches(in: markdown, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return attributedEmphasis(inline: markdown) }
+
+        let result = NSMutableAttributedString()
+        var cursor = 0
+        for match in matches {
+            if match.range.location > cursor {
+                let segment = ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                result.append(attributedEmphasis(inline: segment))
+            }
+            let title = ns.substring(with: match.range(at: 1))
+            result.append(wikiLinkAttributed(title: title))
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            result.append(attributedEmphasis(inline: ns.substring(from: cursor)))
+        }
+        return result
+    }
+
+    /// Parses inline emphasis (bold/italic) and standard links from a segment.
+    private static func attributedEmphasis(inline markdown: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
@@ -221,6 +276,14 @@ enum MarkdownStyler {
             let font = attrs[.font] as? NSFont ?? bodyFont
             let traits = font.fontDescriptor.symbolicTraits
             let text = ns.substring(with: range)
+
+            // Wiki link: the run text already reads "[[Title]]" — emit verbatim.
+            if let url = attrs[.link] as? URL, url.scheme == wikiScheme {
+                result += text
+                index = NSMaxRange(range)
+                continue
+            }
+
             var piece = wrap(text, bold: traits.contains(.bold), italic: traits.contains(.italic))
             if let url = attrs[.link] as? URL {
                 piece = "[\(piece)](\(url.absoluteString))"
@@ -242,6 +305,20 @@ enum MarkdownStyler {
         let core = text.dropFirst(leading.count).dropLast(trailing.count)
         guard !core.isEmpty else { return text }
         return leading + marker + core + marker + trailing
+    }
+
+    /// All wiki-link titles referenced in a raw markdown string, in order and
+    /// de-duplicated (case-insensitively, keeping first spelling).
+    static func wikiTitles(in markdown: String) -> [String] {
+        let ns = markdown as NSString
+        var seen = Set<String>()
+        var titles: [String] = []
+        for match in wikiLinkRegex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
+            let title = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+            guard !title.isEmpty, seen.insert(title.lowercased()).inserted else { continue }
+            titles.append(title)
+        }
+        return titles
     }
 
     // MARK: - Parsing helpers

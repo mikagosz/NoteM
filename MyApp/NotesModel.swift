@@ -103,6 +103,31 @@ final class NotesModel {
         return result
     }
 
+    // MARK: - Wiki links & backlinks
+
+    /// The note matching `title` (case-insensitive), if any.
+    func note(forTitle title: String) -> Note? {
+        let query = title.trimmingCharacters(in: .whitespaces)
+        return notes.first { $0.title.caseInsensitiveCompare(query) == .orderedSame }
+    }
+
+    /// Notes that link to `note` (its incoming wiki links).
+    func backlinks(to note: Note) -> [Note] {
+        notes.filter { $0.id != note.id && $0.links.contains(note.id) }
+    }
+
+    /// Resolves `[[Title]]` references in `content` to target note IDs, skipping
+    /// the note itself and unresolved titles.
+    private func resolveLinks(in content: String, excluding selfID: UUID) -> [UUID] {
+        var ids: [UUID] = []
+        var seen = Set<UUID>()
+        for title in MarkdownStyler.wikiTitles(in: content) {
+            guard let target = note(forTitle: title), target.id != selfID else { continue }
+            if seen.insert(target.id).inserted { ids.append(target.id) }
+        }
+        return ids
+    }
+
     // MARK: - Collected tasks
 
     /// All unchecked checklist items (`- [ ]`) across every note, for the
@@ -149,6 +174,7 @@ final class NotesModel {
 
         var current = notes[index]
         current.title = Self.deriveTitle(from: content)
+        current.links = resolveLinks(in: content, excluding: current.id)
         var saved = store.saveNote(current, content: content)
 
         // Auto-file into a category folder based on the rules (first match wins).
