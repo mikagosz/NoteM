@@ -99,12 +99,21 @@ final class AppSettings {
         didSet { defaults.set(syncEnabled, forKey: Self.syncKey) }
     }
 
+    /// Identifier of the selected colour theme (see `AppTheme`).
+    var themeID: String {
+        didSet { defaults.set(themeID, forKey: Self.themeKey) }
+    }
+
+    /// The currently selected theme.
+    var theme: AppTheme { AppTheme.theme(id: themeID) }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
     private static let qcCornerKey = "quickCaptureCorner"
     private static let trashDaysKey = "trashRetentionDays"
     private static let syncKey = "syncEnabled"
+    private static let themeKey = "themeID"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -119,6 +128,7 @@ final class AppSettings {
             ?? .topRight
         self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
         self.syncEnabled = defaults.bool(forKey: Self.syncKey)
+        self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
     }
 
     func addRule() {

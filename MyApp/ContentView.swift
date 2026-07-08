@@ -28,6 +28,8 @@ struct SettingsView: View {
                 QuickCaptureManager.shared.refresh()
             }
             .tabItem { Label("Quick capture", systemImage: "bolt") }
+            AppearanceSettingsView(settings: settings)
+                .tabItem { Label("Wygląd", systemImage: "paintpalette") }
             SyncSettingsView(settings: settings, model: model) {
                 SyncManager.shared.refresh()
             }
@@ -108,9 +110,10 @@ struct ContentView: View {
 
                 Section {
                     ForEach(filteredNotes) { note in
-                        NoteRow(note: note)
+                        NoteRow(note: note, coverColor: AppTheme.color(id: model.categoryColorID(of: note)))
                             .tag(SidebarSelection.note(note.id))
                             .contextMenu {
+                                categoryColorMenu(for: note)
                                 Button("Usuń", role: .destructive) {
                                     delete(note)
                                 }
@@ -172,6 +175,27 @@ struct ContentView: View {
                 ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
             }
         }
+        .tint(settings.theme.accent)
+        .background(settings.theme.tintedBackground.ignoresSafeArea())
+    }
+
+    /// Context-menu submenu to set a note's category (folder) cover colour.
+    @ViewBuilder
+    private func categoryColorMenu(for note: Note) -> some View {
+        let category = model.category(of: note)
+        if !category.isEmpty {
+            Menu("Kolor folderu „\(category)”") {
+                ForEach(AppTheme.all) { theme in
+                    Button {
+                        model.setCategoryColor(theme.id, for: note)
+                    } label: {
+                        Label(theme.name, systemImage: "circle.fill")
+                    }
+                }
+                Divider()
+                Button("Brak koloru") { model.setCategoryColor(nil, for: note) }
+            }
+        }
     }
 
     private func addNote() {
@@ -190,15 +214,23 @@ struct ContentView: View {
 /// Sidebar row: note title + last-modified date.
 struct NoteRow: View {
     let note: Note
+    var coverColor: Color? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(note.title)
-                .font(.headline)
-                .lineLimit(1)
-            Text(note.modified, format: .dateTime.day().month().year().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            if let coverColor {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(coverColor)
+                    .frame(width: 4)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(note.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(note.modified, format: .dateTime.day().month().year().hour().minute())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 2)
     }

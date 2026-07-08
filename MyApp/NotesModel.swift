@@ -31,6 +31,9 @@ final class NotesModel {
     /// Sync conflicts: same note id found in more than one folder on disk.
     private(set) var conflicts: [NoteConflict] = []
 
+    /// Cover-colour theme id per category folder (e.g. "Praca" → "ocean").
+    private(set) var categoryColors: [String: String] = [:]
+
     /// Absolute URL of the current store root (local Documents or iCloud Drive).
     var rootURL: URL { store.rootURL }
 
@@ -63,6 +66,39 @@ final class NotesModel {
 
         trashedNotes = store.loadTrashedNotes()
             .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
+
+        var colors: [String: String] = [:]
+        for note in notes {
+            let cat = category(of: note)
+            if !cat.isEmpty, colors[cat] == nil, let id = store.categoryColorID(forCategory: cat) {
+                colors[cat] = id
+            }
+        }
+        categoryColors = colors
+    }
+
+    // MARK: - Category cover colour
+
+    /// The category (parent folder path) a note lives in, e.g. "Praca".
+    func category(of note: Note) -> String {
+        note.folderPath.split(separator: "/").dropLast().joined(separator: "/")
+    }
+
+    /// Cover-colour theme id for a note's category, if any.
+    func categoryColorID(of note: Note) -> String? {
+        categoryColors[category(of: note)]
+    }
+
+    /// Sets (or clears) the cover colour for a note's category and persists it.
+    func setCategoryColor(_ id: String?, for note: Note) {
+        let cat = category(of: note)
+        guard !cat.isEmpty else { return }
+        store.setCategoryColorID(id, forCategory: cat)
+        if let id {
+            categoryColors[cat] = id
+        } else {
+            categoryColors.removeValue(forKey: cat)
+        }
     }
 
     /// Reload triggered by an external filesystem change (e.g. another Mac via
