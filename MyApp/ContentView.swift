@@ -26,6 +26,8 @@ struct SettingsView: View {
                 QuickCaptureManager.shared.refresh()
             }
             .tabItem { Label("Quick capture", systemImage: "bolt") }
+            TrashSettingsView(settings: settings)
+                .tabItem { Label("Kosz", systemImage: "trash") }
         }
         .frame(width: 560, height: 420)
     }
@@ -34,6 +36,7 @@ struct SettingsView: View {
 /// What the sidebar can point at: the collected-tasks view or a specific note.
 enum SidebarSelection: Hashable {
     case tasks
+    case trash
     case note(UUID)
 }
 
@@ -56,6 +59,16 @@ struct ContentView: View {
                 Section {
                     Label("Zadania", systemImage: "checklist")
                         .tag(SidebarSelection.tasks)
+                    HStack {
+                        Label("Kosz", systemImage: "trash")
+                        if !model.trashedNotes.isEmpty {
+                            Spacer()
+                            Text("\(model.trashedNotes.count)")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    .tag(SidebarSelection.trash)
                 }
 
                 if !model.tagCounts.isEmpty {
@@ -101,6 +114,7 @@ struct ContentView: View {
             }
             .onAppear {
                 model.rulesProvider = { settings.rules }
+                model.trashRetentionProvider = { settings.trashRetentionDays }
                 QuickCaptureManager.shared.start(model: model, settings: settings)
             }
             .navigationTitle("NoteM")
@@ -117,6 +131,8 @@ struct ContentView: View {
                 TasksView(model: model) { noteID in
                     selection = .note(noteID)
                 }
+            case .trash:
+                TrashView(model: model)
             case .note(let id):
                 if let note = model.notes.first(where: { $0.id == id }) {
                     NoteDetailView(note: note, model: model) { targetID in
@@ -159,6 +175,44 @@ struct NoteRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// Trash view: deleted notes with restore / permanent-delete actions.
+struct TrashView: View {
+    let model: NotesModel
+
+    var body: some View {
+        Group {
+            if model.trashedNotes.isEmpty {
+                ContentUnavailableView(
+                    "Kosz jest pusty",
+                    systemImage: "trash",
+                    description: Text("Usunięte notatki trafiają tutaj i można je przywrócić.")
+                )
+            } else {
+                List {
+                    ForEach(model.trashedNotes) { note in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(note.title)
+                                    .lineLimit(1)
+                                if let deletedAt = note.deletedAt {
+                                    Text("Usunięto \(deletedAt, format: .dateTime.day().month().year().hour().minute())")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Przywróć") { model.restore(note) }
+                            Button("Usuń trwale", role: .destructive) { model.deletePermanently(note) }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Kosz")
     }
 }
 
