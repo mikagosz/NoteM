@@ -264,6 +264,20 @@ final class NoteStore {
         return (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
     }
 
+    /// Moves every top-level entry (note folders, `.trash`, `.history`) from one
+    /// store root into another, used when switching between local and iCloud
+    /// storage. Existing items at the destination are left untouched.
+    static func moveContents(from source: URL, to destination: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        guard let items = try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
+        for item in items {
+            let target = destination.appendingPathComponent(item.lastPathComponent)
+            guard !fm.fileExists(atPath: target.path) else { continue }
+            try? fm.moveItem(at: item, to: target)
+        }
+    }
+
     // MARK: - Helpers
 
     private func ensureRootExists() {

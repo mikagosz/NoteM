@@ -20,13 +20,19 @@ struct TaskItem: Identifiable, Hashable {
 @MainActor
 @Observable
 final class NotesModel {
-    private let store = NoteStore()
+    private var store = NoteStore()
 
     /// Notes currently known to the UI, sorted by `modified` descending.
     private(set) var notes: [Note] = []
 
     /// Trashed notes, most recently deleted first.
     private(set) var trashedNotes: [Note] = []
+
+    /// Sync conflicts: same note id found in more than one folder on disk.
+    private(set) var conflicts: [NoteConflict] = []
+
+    /// Absolute URL of the current store root (local Documents or iCloud Drive).
+    var rootURL: URL { store.rootURL }
 
     /// Supplies the trash auto-clean window (days). Set by the UI from settings.
     var trashRetentionProvider: () -> Int = { 30 }
@@ -39,12 +45,56 @@ final class NotesModel {
         reload()
     }
 
-    /// Reloads all notes from disk, purging expired trash first.
+    /// Reloads all notes from disk, purging expired trash first and detecting
+    /// sync conflicts (the same note id sitting in more than one folder).
     func reload() {
         store.emptyTrash(olderThanDays: trashRetentionProvider())
-        notes = store.loadAllNotes().sorted { $0.modified > $1.modified }
+
+        let raw = store.loadAllNotes()
+        let grouped = Dictionary(grouping: raw, by: \.id)
+        conflicts = grouped
+            .filter { $0.value.count > 1 }
+            .map { NoteConflict(id: $0.key, versions: $0.value.sorted { $0.modified > $1.modified }) }
+            .sorted { $0.versions[0].title < $1.versions[0].title }
+        // For conflicted ids, show the most recently modified version in the list.
+        notes = grouped.values
+            .compactMap { $0.max(by: { $0.modified < $1.modified }) }
+            .sorted { $0.modified > $1.modified }
+
         trashedNotes = store.loadTrashedNotes()
             .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
+    }
+
+    /// Reload triggered by an external filesystem change (e.g. another Mac via
+    /// iCloud). Same as `reload()`, named for clarity at the call site.
+    func reloadFromExternalChange() { reload() }
+
+    // MARK: - Storage location (sync)
+
+    /// Switches the store root between local and iCloud, optionally moving the
+    /// existing notes across, then reloads.
+    func switchStorage(syncEnabled: Bool, moveExisting: Bool) {
+        let newRoot = StorageLocation.root(syncEnabled: syncEnabled)
+        guard newRoot != store.rootURL else { return }
+        if moveExisting {
+            NoteStore.moveContents(from: store.rootURL, to: newRoot)
+        }
+        store = NoteStore(rootURL: newRoot)
+        reload()
+    }
+
+    /// Resolves a conflict by keeping one version and permanently removing the
+    /// other folders that share its id.
+    func resolveConflict(_ conflict: NoteConflict, keeping keep: Note) {
+        for version in conflict.versions where version.folderPath != keep.folderPath {
+            store.deleteNote(version)
+        }
+        reload()
+    }
+
+    /// Current on-disk content of any note version (used by the conflict view).
+    func rawContent(for note: Note) -> String {
+        store.loadContent(for: note)
     }
 
     /// Creates a new empty note and inserts it at the top of the list.
