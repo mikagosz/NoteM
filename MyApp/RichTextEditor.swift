@@ -207,6 +207,51 @@ final class NoteTextView: NSTextView {
         }
         return super.performKeyEquivalent(with: event)
     }
+
+    /// Custom paste: prefer rich content (RTF/HTML) from the pasteboard,
+    /// sanitize it to NoteM's supported formatting, and fall back to plain text.
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+
+        if let data = pasteboard.data(forType: .rtf),
+           let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
+            insertSanitized(attributed)
+            return
+        }
+
+        if let data = pasteboard.data(forType: .html),
+           let attributed = try? NSAttributedString(
+               data: data,
+               options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue
+               ],
+               documentAttributes: nil
+           ) {
+            insertSanitized(attributed)
+            return
+        }
+
+        // Plain text (or unknown source): insert unchanged.
+        if let string = pasteboard.string(forType: .string) {
+            insertAttributed(NSAttributedString(string: string, attributes: MarkdownStyler.defaultTypingAttributes))
+            return
+        }
+
+        super.paste(sender)
+    }
+
+    private func insertSanitized(_ attributed: NSAttributedString) {
+        insertAttributed(PasteSanitizer.sanitized(attributed))
+    }
+
+    private func insertAttributed(_ attributed: NSAttributedString) {
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: attributed.string) else { return }
+        textStorage?.replaceCharacters(in: range, with: attributed)
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location + attributed.length, length: 0))
+    }
 }
 
 /// SwiftUI wrapper around a scrollable `NoteTextView`.
