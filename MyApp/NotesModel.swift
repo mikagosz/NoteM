@@ -58,12 +58,30 @@ final class NotesModel {
         notes.sort { $0.modified > $1.modified }
     }
 
-    /// Derives a display title from the first non-empty line of the content.
+    /// Derives a display title from the first non-empty line of the content,
+    /// stripping leading markdown markers (headers, list bullets) and emphasis.
     private static func deriveTitle(from content: String) -> String {
-        let firstLine = content
+        var line = content
             .split(separator: "\n", omittingEmptySubsequences: true)
             .first
             .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        return firstLine.isEmpty ? "Nowa notatka" : String(firstLine.prefix(60))
+
+        // Leading header hashes.
+        while line.hasPrefix("#") { line.removeFirst() }
+        line = line.trimmingCharacters(in: .whitespaces)
+
+        // Leading list markers ("- ", "* ", "• ", "1. ").
+        for marker in ["- ", "* ", "• "] where line.hasPrefix(marker) {
+            line.removeFirst(marker.count)
+        }
+        if let dot = line.firstIndex(of: "."),
+           line[line.startIndex..<dot].allSatisfy(\.isNumber),
+           line.index(after: dot) < line.endIndex,
+           line[line.index(after: dot)] == " " {
+            line = String(line[line.index(dot, offsetBy: 2)...])
+        }
+
+        line = line.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? "Nowa notatka" : String(line.prefix(60))
     }
 }
