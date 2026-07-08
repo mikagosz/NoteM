@@ -81,8 +81,18 @@ final class AppSettings {
         didSet { persistRules() }
     }
 
+    /// Quick-capture hot corner: on/off and which corner.
+    var quickCaptureEnabled: Bool {
+        didSet { defaults.set(quickCaptureEnabled, forKey: Self.qcEnabledKey) }
+    }
+    var quickCaptureCorner: QuickCaptureCorner {
+        didSet { defaults.set(quickCaptureCorner.rawValue, forKey: Self.qcCornerKey) }
+    }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
+    private static let qcEnabledKey = "quickCaptureEnabled"
+    private static let qcCornerKey = "quickCaptureCorner"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -92,6 +102,9 @@ final class AppSettings {
         } else {
             self.rules = []
         }
+        self.quickCaptureEnabled = defaults.bool(forKey: Self.qcEnabledKey)
+        self.quickCaptureCorner = QuickCaptureCorner(rawValue: defaults.string(forKey: Self.qcCornerKey) ?? "")
+            ?? .topRight
     }
 
     func addRule() {
