@@ -38,6 +38,7 @@ struct SettingsView: View {
                 case .general:        GeneralSettingsView()
                 case .appearance:     AppearanceSettingsView(settings: settings)
                 case .categorization: RulesSettingsView(settings: settings)
+                case .smartFolders:   SmartFoldersSettingsView(settings: settings)
                 case .quickCapture:
                     QuickCaptureSettingsView(settings: settings) { QuickCaptureManager.shared.refresh() }
                 case .sync:
@@ -52,13 +53,14 @@ struct SettingsView: View {
 }
 
 private enum SettingsPane: String, Hashable, CaseIterable {
-    case general, appearance, categorization, quickCapture, sync, trash
+    case general, appearance, categorization, smartFolders, quickCapture, sync, trash
 
     var title: String {
         switch self {
         case .general:        return "Ogólne"
         case .appearance:     return "Wygląd"
         case .categorization: return "Katalogowanie"
+        case .smartFolders:   return "Inteligentne foldery"
         case .quickCapture:   return "Quick Capture"
         case .sync:           return "Synchronizacja"
         case .trash:          return "Kosz"
@@ -70,6 +72,7 @@ private enum SettingsPane: String, Hashable, CaseIterable {
         case .general:        return "gearshape"
         case .appearance:     return "paintpalette"
         case .categorization: return "folder.badge.gearshape"
+        case .smartFolders:   return "folder.badge.questionmark"
         case .quickCapture:   return "bolt.fill"
         case .sync:           return "arrow.triangle.2.circlepath"
         case .trash:          return "trash"
@@ -90,11 +93,96 @@ private struct GeneralSettingsView: View {
     }
 }
 
-/// What the sidebar can point at: the collected-tasks view or a specific note.
+/// Settings pane for managing smart folders.
+private struct SmartFoldersSettingsView: View {
+    @Bindable var settings: AppSettings
+    @State private var showAdd = false
+    @State private var newName = ""
+    @State private var newTag = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Inteligentne foldery")
+                .font(.headline)
+            Text("Inteligentne foldery to zapisane wyszukiwania, które automatycznie zbierają pasujące notatki. "
+                 + "Dwa wbudowane foldery (Dzisiejsze, Przypięte) są zawsze dostępne.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            List {
+                Section("Wbudowane") {
+                    ForEach(SmartFolder.predefined) { sf in
+                        Label(sf.name, systemImage: sf.icon)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if !settings.smartFolders.isEmpty {
+                    Section("Własne") {
+                        ForEach(settings.smartFolders) { sf in
+                            Label(sf.name, systemImage: sf.icon)
+                        }
+                        .onDelete { settings.smartFolders.remove(atOffsets: $0) }
+                    }
+                }
+            }
+            .frame(minHeight: 160)
+
+            if showAdd {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Nazwa folderu", text: $newName)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Tag (np. projekt)", text: $newTag)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Button("Anuluj") { showAdd = false; newName = ""; newTag = "" }
+                            Spacer()
+                            Button("Dodaj") { commitAdd() }
+                                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                                          || newTag.trimmingCharacters(in: .whitespaces).isEmpty)
+                                .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            } else {
+                Button { showAdd = true } label: {
+                    Label("Dodaj folder (tag contains)", systemImage: "plus")
+                }
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func commitAdd() {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        let tag  = newTag.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !tag.isEmpty else { return }
+        settings.addSmartFolder(SmartFolder(
+            id: UUID(),
+            name: name,
+            icon: "folder.badge.questionmark",
+            conditions: [.tagContains(tag)],
+            conjunctive: true
+        ))
+        showAdd = false; newName = ""; newTag = ""
+    }
+}
+
+/// What the sidebar can point at: the collected-tasks view, trash, or a specific note.
 enum SidebarSelection: Hashable {
     case tasks
     case trash
     case note(UUID)
+}
+
+/// Active filter on the note list (mutually exclusive; only one applies at a time).
+enum NoteListFilter: Hashable {
+    case tag(String)
+    case folder(String)
+    case smartFolder(UUID)
 }
 
 struct ContentView: View {
@@ -103,14 +191,32 @@ struct ContentView: View {
 
     @Environment(\.openSettings) private var openSettings
     @State private var selection: SidebarSelection?
-    /// When set, the notes list shows only notes carrying this tag.
-    @State private var tagFilter: String?
+    /// Active filter on the notes list (tag, folder, or smart folder).
+    @State private var noteFilter: NoteListFilter?
     /// Whether the conflict-resolution sheet is showing.
     @State private var showConflicts = false
 
     private var filteredNotes: [Note] {
-        guard let tagFilter else { return model.notes }
-        return model.notes.filter { $0.tags.contains(tagFilter) }
+        switch noteFilter {
+        case .none:
+            return model.notes
+        case .tag(let tag):
+            return model.notes.filter { $0.tags.contains(tag) }
+        case .folder(let folder):
+            return model.notes.filter { model.category(of: $0) == folder }
+        case .smartFolder(let id):
+            guard let sf = settings.allSmartFolders.first(where: { $0.id == id }) else { return model.notes }
+            return model.notes.filter { sf.matches($0) }
+        }
+    }
+
+    private var activeFilterLabel: String? {
+        switch noteFilter {
+        case .none: return nil
+        case .tag(let t): return "#\(t)"
+        case .folder(let f): return f
+        case .smartFolder(let id): return settings.allSmartFolders.first(where: { $0.id == id })?.name
+        }
     }
 
     var body: some View {
@@ -144,15 +250,47 @@ struct ContentView: View {
                     .tag(SidebarSelection.trash)
                 }
 
+                if !settings.allSmartFolders.isEmpty {
+                    Section("Inteligentne foldery") {
+                        ForEach(settings.allSmartFolders) { sf in
+                            let count = model.notes.filter { sf.matches($0) }.count
+                            FolderFilterRow(
+                                label: sf.name,
+                                icon: sf.icon,
+                                count: count,
+                                isActive: noteFilter == .smartFolder(sf.id)
+                            ) {
+                                noteFilter = (noteFilter == .smartFolder(sf.id)) ? nil : .smartFolder(sf.id)
+                            }
+                        }
+                    }
+                }
+
+                if !model.categories.isEmpty {
+                    Section("Foldery") {
+                        ForEach(model.categories, id: \.self) { folder in
+                            let count = model.notes.filter { model.category(of: $0) == folder }.count
+                            FolderFilterRow(
+                                label: folder,
+                                icon: "folder",
+                                count: count,
+                                isActive: noteFilter == .folder(folder)
+                            ) {
+                                noteFilter = (noteFilter == .folder(folder)) ? nil : .folder(folder)
+                            }
+                        }
+                    }
+                }
+
                 if !model.tagCounts.isEmpty {
                     Section("Tagi") {
                         ForEach(model.tagCounts, id: \.tag) { entry in
                             TagFilterRow(
                                 tag: entry.tag,
                                 count: entry.count,
-                                isActive: tagFilter == entry.tag
+                                isActive: noteFilter == .tag(entry.tag)
                             ) {
-                                tagFilter = (tagFilter == entry.tag) ? nil : entry.tag
+                                noteFilter = (noteFilter == .tag(entry.tag)) ? nil : .tag(entry.tag)
                             }
                         }
                     }
@@ -172,16 +310,16 @@ struct ContentView: View {
                 } header: {
                     HStack {
                         Text("Notatki")
-                        if let tagFilter {
+                        if let label = activeFilterLabel {
                             Spacer()
                             Button {
-                                self.tagFilter = nil
+                                noteFilter = nil
                             } label: {
-                                Label("#\(tagFilter)", systemImage: "xmark.circle.fill")
+                                Label(label, systemImage: "xmark.circle.fill")
                             }
                             .buttonStyle(.plain)
                             .font(.caption)
-                            .help("Wyczyść filtr tagu")
+                            .help("Wyczyść filtr")
                         }
                     }
                 }
@@ -351,6 +489,30 @@ struct TrashView: View {
             }
         }
         .navigationTitle("Kosz")
+    }
+}
+
+/// Sidebar row for a smart folder or physical folder filter.
+struct FolderFilterRow: View {
+    let label: String
+    let icon: String
+    let count: Int
+    let isActive: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack {
+                Label(label, systemImage: icon)
+                Spacer()
+                Text("\(count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.accentColor : .primary)
     }
 }
 

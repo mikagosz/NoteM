@@ -107,6 +107,11 @@ final class AppSettings {
     /// The currently selected theme.
     var theme: AppTheme { AppTheme.theme(id: themeID) }
 
+    /// User-defined smart folders (predefined ones are always prepended at runtime).
+    var smartFolders: [SmartFolder] {
+        didSet { persistSmartFolders() }
+    }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
@@ -114,6 +119,12 @@ final class AppSettings {
     private static let trashDaysKey = "trashRetentionDays"
     private static let syncKey = "syncEnabled"
     private static let themeKey = "themeID"
+    private static let smartFoldersKey = "smartFolders"
+
+    /// All smart folders: predefined first, then user-created.
+    var allSmartFolders: [SmartFolder] {
+        SmartFolder.predefined + smartFolders
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -129,6 +140,12 @@ final class AppSettings {
         self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
         self.syncEnabled = defaults.bool(forKey: Self.syncKey)
         self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
+        if let data = defaults.data(forKey: Self.smartFoldersKey),
+           let decoded = try? JSONDecoder().decode([SmartFolder].self, from: data) {
+            self.smartFolders = decoded
+        } else {
+            self.smartFolders = []
+        }
     }
 
     func addRule() {
@@ -155,6 +172,20 @@ final class AppSettings {
     private func persistRules() {
         if let data = try? JSONEncoder().encode(rules) {
             defaults.set(data, forKey: Self.rulesKey)
+        }
+    }
+
+    func addSmartFolder(_ folder: SmartFolder) {
+        smartFolders.append(folder)
+    }
+
+    func removeSmartFolder(id: UUID) {
+        smartFolders.removeAll { $0.id == id }
+    }
+
+    private func persistSmartFolders() {
+        if let data = try? JSONEncoder().encode(smartFolders) {
+            defaults.set(data, forKey: Self.smartFoldersKey)
         }
     }
 }

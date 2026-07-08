@@ -199,6 +199,20 @@ final class NotesModel {
         store.loadContent(for: note)
     }
 
+    // MARK: - Categories (physical folders)
+
+    /// Distinct non-Inbox category names present in the current note list, sorted.
+    var categories: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for note in notes {
+            let cat = category(of: note)
+            guard !cat.isEmpty, cat != CategoryEngine.inbox, seen.insert(cat).inserted else { continue }
+            result.append(cat)
+        }
+        return result.sorted()
+    }
+
     // MARK: - Tags
 
     /// All tags in use with how many notes carry each, sorted alphabetically.
