@@ -238,16 +238,6 @@ struct ContentView: View {
                 Section {
                     Label("Zadania", systemImage: "checklist")
                         .tag(SidebarSelection.tasks)
-                    HStack {
-                        Label("Kosz", systemImage: "trash")
-                        if !model.trashedNotes.isEmpty {
-                            Spacer()
-                            Text("\(model.trashedNotes.count)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-                    .tag(SidebarSelection.trash)
                 }
 
                 if !settings.allSmartFolders.isEmpty {
@@ -270,11 +260,14 @@ struct ContentView: View {
                     Section("Foldery") {
                         ForEach(model.categories, id: \.self) { folder in
                             let count = model.notes.filter { model.category(of: $0) == folder }.count
+                            let tint = model.categoryColors[folder].flatMap { AppTheme.color(id: $0) }
                             FolderFilterRow(
                                 label: folder,
-                                icon: "folder",
+                                icon: "folder.fill",
                                 count: count,
-                                isActive: noteFilter == .folder(folder)
+                                isActive: noteFilter == .folder(folder),
+                                iconTint: tint,
+                                onSetColor: { id in model.setCategoryColor(id, for: model.notes.first { model.category(of: $0) == folder }!) }
                             ) {
                                 noteFilter = (noteFilter == .folder(folder)) ? nil : .folder(folder)
                             }
@@ -351,25 +344,58 @@ struct ContentView: View {
                 ConflictResolverView(model: model) { showConflicts = false }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                HStack {
-                    Button(action: addNote) {
-                        Label("Nowa notatka", systemImage: "plus")
+                VStack(spacing: 0) {
+                    Divider()
+                    // Trash row — always pinned at the bottom of the sidebar.
+                    Button {
+                        noteFilter = nil
+                        selection = .trash
+                    } label: {
+                        HStack {
+                            Label("Kosz", systemImage: "trash")
+                                .foregroundStyle(selection == .trash ? Color.accentColor : .primary)
+                            if !model.trashedNotes.isEmpty {
+                                Spacer()
+                                Text("\(model.trashedNotes.count)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    Divider()
+                    // Action bar: new note (left) + settings gear (right).
+                    HStack {
+                        Button(action: addNote) {
+                            Image(systemName: "square.and.pencil")
+                                .imageScale(.large)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Nowa notatka")
+                        Spacer()
+                        Button { openSettings() } label: {
+                            Image(systemName: "gear")
+                                .imageScale(.large)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Ustawienia")
+                    }
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    Spacer()
                 }
                 .background(.bar)
-                .overlay(alignment: .top) { Divider() }
             }
             .navigationTitle("NoteM")
             .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Button { openSettings() } label: {
-                        Image(systemName: "gear")
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: addNote) {
+                        Image(systemName: "square.and.pencil")
                     }
-                    .help("Ustawienia")
+                    .help("Nowa notatka (⌘N)")
                 }
             }
         } detail: {
@@ -498,12 +524,19 @@ struct FolderFilterRow: View {
     let icon: String
     let count: Int
     let isActive: Bool
+    var iconTint: Color? = nil
+    var onSetColor: ((String?) -> Void)? = nil
     let onToggle: () -> Void
 
     var body: some View {
         Button(action: onToggle) {
             HStack {
-                Label(label, systemImage: icon)
+                Label {
+                    Text(label)
+                } icon: {
+                    Image(systemName: icon)
+                        .foregroundStyle(iconTint ?? Color.accentColor)
+                }
                 Spacer()
                 Text("\(count)")
                     .foregroundStyle(.secondary)
@@ -513,6 +546,22 @@ struct FolderFilterRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(isActive ? Color.accentColor : .primary)
+        .contextMenu {
+            if let onSetColor {
+                Menu("Kolor ikony folderu") {
+                    ForEach(AppTheme.all) { theme in
+                        Button {
+                            onSetColor(theme.id)
+                        } label: {
+                            Label(theme.name, systemImage: "circle.fill")
+                                .foregroundStyle(theme.accent)
+                        }
+                    }
+                    Divider()
+                    Button("Domyślny") { onSetColor(nil) }
+                }
+            }
+        }
     }
 }
 

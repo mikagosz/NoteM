@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+extension NSPasteboard.PasteboardType {
+    /// Private type used to round-trip NoteM's full attributed string (including
+    /// custom attributes like headerLevel / listKind / checklist) within the same
+    /// app, without going through RTF which strips those custom keys.
+    static let noteMRichText = NSPasteboard.PasteboardType("com.notem.richtext")
+}
+
 /// Drives formatting commands on the underlying `NSTextView` and reports edits
 /// back to SwiftUI. Owned by `NoteDetailView` as `@State` so it survives view
 /// updates; the text view is attached once in `RichTextEditor.makeNSView`.
@@ -33,7 +40,9 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             onH2:        { [weak self] in self?.toggleHeader(2) },
             onBullet:    { [weak self] in self?.toggleList("bullet") },
             onNumbered:  { [weak self] in self?.toggleList("ordered") },
-            onChecklist: { [weak self] in self?.toggleChecklist() }
+            onChecklist: { [weak self] in self?.toggleChecklist() },
+            onTable:     { [weak self] in self?.insertTable() },
+            onCode:      { [weak self] in self?.insertInlineCode() }
         )
         applyStoredContent()
     }
@@ -218,6 +227,38 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
         storage.replaceCharacters(in: paragraphRange, with: rebuilt)
         textView.didChangeText()
+    }
+
+    // MARK: - Table
+
+    func insertTable() {
+        let template = "| Kolumna 1 | Kolumna 2 | Kolumna 3 |\n|-----------|-----------|----------|\n|           |           |          |"
+        let attrs = MarkdownStyler.defaultTypingAttributes
+        let str = NSAttributedString(string: template, attributes: attrs)
+        guard let textView else { return }
+        let range = textView.selectedRange()
+        guard textView.shouldChangeText(in: range, replacementString: template) else { return }
+        textView.textStorage?.replaceCharacters(in: range, with: str)
+        textView.didChangeText()
+        textView.setSelectedRange(NSRange(location: range.location, length: 0))
+    }
+
+    // MARK: - Inline code
+
+    func insertInlineCode() {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        let selectedText = range.length > 0 ? (storage.string as NSString).substring(with: range) : ""
+        let wrapped = "`\(selectedText)`"
+        var attrs = MarkdownStyler.defaultTypingAttributes
+        attrs[.font] = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        let str = NSAttributedString(string: wrapped, attributes: attrs)
+        guard textView.shouldChangeText(in: range, replacementString: wrapped) else { return }
+        storage.replaceCharacters(in: range, with: str)
+        textView.didChangeText()
+        // Place cursor inside the backticks when no selection
+        let cursorPos = range.length == 0 ? range.location + 1 : range.location + wrapped.count
+        textView.setSelectedRange(NSRange(location: cursorPos, length: 0))
     }
 
     private func transformLineToChecklist(_ line: NSMutableAttributedString) {
@@ -456,10 +497,48 @@ final class NoteTextView: NSTextView {
         didChangeText()
     }
 
-    /// Custom paste: prefer rich content (RTF/HTML) from the pasteboard,
-    /// sanitize it to NoteM's supported formatting, and fall back to plain text.
+    // MARK: - Copy / Cut (write custom NoteM type for lossless round-trip)
+
+    override func copy(_ sender: Any?) {
+        super.copy(sender)
+        writeNoteMType(for: selectedRange())
+    }
+
+    override func cut(_ sender: Any?) {
+        // Capture before super deletes the selection
+        let range = selectedRange()
+        let saved: NSAttributedString? = range.length > 0
+            ? textStorage?.attributedSubstring(from: range)
+            : nil
+        super.cut(sender)
+        if let attributed = saved {
+            writeNoteMType(attributed)
+        }
+    }
+
+    private func writeNoteMType(for range: NSRange) {
+        guard range.length > 0, let storage = textStorage else { return }
+        writeNoteMType(storage.attributedSubstring(from: range))
+    }
+
+    private func writeNoteMType(_ attributed: NSAttributedString) {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: attributed, requiringSecureCoding: false) else { return }
+        NSPasteboard.general.addTypes([.noteMRichText], owner: nil)
+        NSPasteboard.general.setData(data, forType: .noteMRichText)
+    }
+
+    /// Custom paste: prefer NoteM's own rich-text type (lossless), then RTF/HTML
+    /// (sanitized), then plain text.
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
+
+        // NoteM-to-NoteM: use our private type to preserve all custom attributes
+        // (headerLevel, listKind, checklist, attachments) without lossy RTF round-trip.
+        if let data = pasteboard.data(forType: .noteMRichText),
+           let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
+            insertAttributed(attributed)
+            return
+        }
 
         if let data = pasteboard.data(forType: .rtf),
            let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
@@ -480,7 +559,6 @@ final class NoteTextView: NSTextView {
             return
         }
 
-        // Plain text (or unknown source): insert unchanged.
         if let string = pasteboard.string(forType: .string) {
             insertAttributed(NSAttributedString(string: string, attributes: MarkdownStyler.defaultTypingAttributes))
             return
