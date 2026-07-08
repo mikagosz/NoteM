@@ -1,54 +1,56 @@
 import SwiftUI
 
-/// Editor for a single note's plain-text content.
+/// WYSIWYG editor for a single note. Content is stored on disk as markdown in
+/// `note.md`; in the editor it's an `NSAttributedString`.
 ///
-/// Autosaves ~1s after the last edit (debounced) and also flushes on close /
-/// when switching to another note (via `onDisappear`, since the parent keys
-/// this view by `note.id`).
+/// Autosaves ~1s after the last edit (debounced) and flushes on close / when
+/// switching to another note (the parent keys this view by `note.id`).
 struct NoteDetailView: View {
     let note: Note
     let model: NotesModel
 
-    @State private var text: String = ""
-    /// The content as last loaded/saved — used to avoid spurious saves.
-    @State private var loadedContent: String?
+    @State private var controller = RichTextController()
+    /// Markdown as last loaded/saved — used to avoid spurious saves.
+    @State private var loadedMarkdown: String?
     @State private var saveTask: Task<Void, Never>?
 
     var body: some View {
-        TextEditor(text: $text)
-            .font(.body)
-            .padding(8)
-            .navigationTitle(note.title)
-            .task {
-                let current = model.content(for: note)
-                loadedContent = current
-                text = current
-            }
-            .onChange(of: text) { _, newValue in
-                guard let loadedContent, newValue != loadedContent else { return }
-                scheduleSave(newValue)
-            }
-            .onDisappear {
-                saveTask?.cancel()
-                flush()
-            }
+        VStack(spacing: 0) {
+            EditorToolbar(controller: controller)
+            Divider()
+            RichTextEditor(controller: controller)
+        }
+        .navigationTitle(note.title)
+        .task { load() }
+        .onDisappear {
+            saveTask?.cancel()
+            flush()
+        }
     }
 
-    /// Debounced autosave: cancels any pending save and schedules a new one.
-    private func scheduleSave(_ content: String) {
+    private func load() {
+        let markdown = model.content(for: note)
+        loadedMarkdown = markdown
+        controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown))
+        controller.onChange = { _ in scheduleSave() }
+    }
+
+    /// Debounced autosave.
+    private func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            model.save(note, content: content)
-            loadedContent = content
+            flush()
         }
     }
 
-    /// Saves immediately if there are unsaved changes.
+    /// Serializes the editor to markdown and saves it if changed.
     private func flush() {
-        guard text != loadedContent else { return }
-        model.save(note, content: text)
-        loadedContent = text
+        guard let textView = controller.textView else { return }
+        let markdown = MarkdownStyler.markdown(from: textView.attributedString())
+        guard markdown != loadedMarkdown else { return }
+        model.save(note, content: markdown)
+        loadedMarkdown = markdown
     }
 }
