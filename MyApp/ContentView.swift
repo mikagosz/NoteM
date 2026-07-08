@@ -346,7 +346,6 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     Divider()
-                    // Trash row — always pinned at the bottom of the sidebar.
                     Button {
                         noteFilter = nil
                         selection = .trash
@@ -366,36 +365,25 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    Divider()
-                    // Action bar: new note (left) + settings gear (right).
-                    HStack {
-                        Button(action: addNote) {
-                            Image(systemName: "square.and.pencil")
-                                .imageScale(.large)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Nowa notatka")
-                        Spacer()
-                        Button { openSettings() } label: {
-                            Image(systemName: "gear")
-                                .imageScale(.large)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Ustawienia")
-                    }
-                    .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                 }
                 .background(.bar)
             }
             .navigationTitle("NoteM")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                // Left side — compose button sits near the NoteM title.
+                ToolbarItem(placement: .navigation) {
                     Button(action: addNote) {
                         Image(systemName: "square.and.pencil")
                     }
-                    .help("Nowa notatka (⌘N)")
+                    .help("Nowa notatka")
+                }
+                // Right side — settings gear always visible at top-right.
+                ToolbarItem(placement: .primaryAction) {
+                    Button { openSettings() } label: {
+                        Image(systemName: "gear")
+                    }
+                    .help("Ustawienia")
                 }
             }
         } detail: {
@@ -420,7 +408,6 @@ struct ContentView: View {
             }
         }
         .tint(settings.theme.accent)
-        .background(settings.theme.tintedBackground.ignoresSafeArea())
     }
 
     /// Context-menu submenu to set a note's category (folder) cover colour.
@@ -463,9 +450,9 @@ struct NoteRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if let coverColor {
-                RoundedRectangle(cornerRadius: 2)
+                RoundedRectangle(cornerRadius: 3)
                     .fill(coverColor)
-                    .frame(width: 4)
+                    .frame(width: 7)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(note.title)

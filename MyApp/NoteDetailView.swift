@@ -34,6 +34,9 @@ struct NoteDetailView: View {
                 BacklinksPanel(notes: backlinks, onOpen: openNote)
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            FormatBar(controller: controller)
+        }
         .navigationTitle(note.title)
         .toolbar {
             ToolbarItem(placement: .automatic) {
