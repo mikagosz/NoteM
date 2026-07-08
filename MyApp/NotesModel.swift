@@ -67,6 +67,42 @@ final class NotesModel {
         store.loadContent(for: note)
     }
 
+    // MARK: - Tags
+
+    /// All tags in use with how many notes carry each, sorted alphabetically.
+    var tagCounts: [(tag: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for note in notes {
+            for tag in note.tags { counts[tag, default: 0] += 1 }
+        }
+        return counts
+            .map { (tag: $0.key, count: $0.value) }
+            .sorted { $0.tag.localizedCaseInsensitiveCompare($1.tag) == .orderedAscending }
+    }
+
+    /// Replaces a note's tags (trimmed, de-duplicated) and persists them to
+    /// `meta.json` without touching content or the `modified` timestamp.
+    func setTags(_ tags: [String], for note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        let cleaned = Self.normalizeTags(tags)
+        guard cleaned != notes[index].tags else { return }
+        notes[index].tags = cleaned
+        store.updateMeta(notes[index])
+    }
+
+    /// Trims, drops empties, and removes case-insensitive duplicates (keeping
+    /// the first spelling), preserving order.
+    private static func normalizeTags(_ tags: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for raw in tags {
+            let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tag.isEmpty else { continue }
+            if seen.insert(tag.lowercased()).inserted { result.append(tag) }
+        }
+        return result
+    }
+
     // MARK: - Collected tasks
 
     /// All unchecked checklist items (`- [ ]`) across every note, for the

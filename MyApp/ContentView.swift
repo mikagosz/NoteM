@@ -42,6 +42,13 @@ struct ContentView: View {
 
     @State private var model = NotesModel()
     @State private var selection: SidebarSelection?
+    /// When set, the notes list shows only notes carrying this tag.
+    @State private var tagFilter: String?
+
+    private var filteredNotes: [Note] {
+        guard let tagFilter else { return model.notes }
+        return model.notes.filter { $0.tags.contains(tagFilter) }
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -50,8 +57,23 @@ struct ContentView: View {
                     Label("Zadania", systemImage: "checklist")
                         .tag(SidebarSelection.tasks)
                 }
-                Section("Notatki") {
-                    ForEach(model.notes) { note in
+
+                if !model.tagCounts.isEmpty {
+                    Section("Tagi") {
+                        ForEach(model.tagCounts, id: \.tag) { entry in
+                            TagFilterRow(
+                                tag: entry.tag,
+                                count: entry.count,
+                                isActive: tagFilter == entry.tag
+                            ) {
+                                tagFilter = (tagFilter == entry.tag) ? nil : entry.tag
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    ForEach(filteredNotes) { note in
                         NoteRow(note: note)
                             .tag(SidebarSelection.note(note.id))
                             .contextMenu {
@@ -59,6 +81,21 @@ struct ContentView: View {
                                     delete(note)
                                 }
                             }
+                    }
+                } header: {
+                    HStack {
+                        Text("Notatki")
+                        if let tagFilter {
+                            Spacer()
+                            Button {
+                                self.tagFilter = nil
+                            } label: {
+                                Label("#\(tagFilter)", systemImage: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .help("Wyczyść filtr tagu")
+                        }
                     }
                 }
             }
@@ -120,6 +157,29 @@ struct NoteRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// Sidebar row for a tag filter: name + note count, highlighted when active.
+struct TagFilterRow: View {
+    let tag: String
+    let count: Int
+    let isActive: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack {
+                Label(tag, systemImage: isActive ? "tag.fill" : "tag")
+                Spacer()
+                Text("\(count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isActive ? Color.accentColor : .primary)
     }
 }
 
