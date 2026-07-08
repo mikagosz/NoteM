@@ -8,22 +8,32 @@ struct AppTheme: Identifiable, Hashable {
     let accent: Color
 
     /// Subtle background tint used behind the app for this theme.
-    var tintedBackground: Color { accent.opacity(0.07) }
+    var tintedBackground: Color { accent.opacity(0.10) }
 
     /// The built-in themes offered in Settings → Wygląd.
     static let all: [AppTheme] = [
-        AppTheme(id: "purple", name: "Neon Purple", accent: Color(hex: 0x8B5CF6)),
-        AppTheme(id: "ocean",  name: "Ocean",       accent: Color(hex: 0x0EA5E9)),
-        AppTheme(id: "forest", name: "Forest",      accent: Color(hex: 0x22C55E)),
-        AppTheme(id: "sunset", name: "Sunset",      accent: Color(hex: 0xF97316)),
-        AppTheme(id: "rose",   name: "Rose",        accent: Color(hex: 0xF43F5E)),
-        AppTheme(id: "mono",   name: "Mono",        accent: Color(hex: 0x64748B))
+        AppTheme(id: "blue",    name: "Blue",    accent: Color(hex: 0x0055FF)),
+        AppTheme(id: "purple",  name: "Purple",  accent: Color(hex: 0x8800FF)),
+        AppTheme(id: "pink",    name: "Pink",    accent: Color(hex: 0xFF0077)),
+        AppTheme(id: "red",     name: "Red",     accent: Color(hex: 0xFF1100)),
+        AppTheme(id: "orange",  name: "Orange",  accent: Color(hex: 0xFF6600)),
+        AppTheme(id: "yellow",  name: "Yellow",  accent: Color(hex: 0xFFBB00)),
+        AppTheme(id: "green",   name: "Green",   accent: Color(hex: 0x00CC44)),
+        AppTheme(id: "teal",    name: "Teal",    accent: Color(hex: 0x00BBCC)),
+        AppTheme(id: "indigo",  name: "Indigo",  accent: Color(hex: 0x4400EE)),
+        AppTheme(id: "mono",    name: "Graphite",accent: Color(hex: 0x888899))
     ]
 
-    static let fallback = all[0]
+    static let fallback = all[0]  // blue
 
     static func theme(id: String) -> AppTheme {
-        all.first { $0.id == id } ?? fallback
+        // "ocean", "forest", "sunset", "rose" are legacy ids — map to closest new theme.
+        let legacyMap: [String: String] = [
+            "ocean": "blue", "forest": "green", "sunset": "orange",
+            "rose": "pink", "neon purple": "purple"
+        ]
+        let resolvedID = legacyMap[id] ?? id
+        return all.first { $0.id == resolvedID } ?? fallback
     }
 
     /// Accent colour for a theme id, or `nil` if unknown — used for per-folder

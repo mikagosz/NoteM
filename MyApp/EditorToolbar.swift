@@ -15,7 +15,9 @@ final class FloatingFormatPanel: NSPanel {
         onH2:        @escaping () -> Void,
         onBullet:    @escaping () -> Void,
         onNumbered:  @escaping () -> Void,
-        onChecklist: @escaping () -> Void
+        onChecklist: @escaping () -> Void,
+        onTable:     @escaping () -> Void,
+        onCode:      @escaping () -> Void
     ) {
         super.init(
             contentRect: .zero,
@@ -34,7 +36,7 @@ final class FloatingFormatPanel: NSPanel {
             onBold: onBold, onItalic: onItalic,
             onH1: onH1, onH2: onH2,
             onBullet: onBullet, onNumbered: onNumbered,
-            onChecklist: onChecklist
+            onChecklist: onChecklist, onTable: onTable, onCode: onCode
         )
 
         let blur = NSVisualEffectView()
@@ -92,6 +94,8 @@ private struct FloatingToolbarContent: View {
     let onBullet:    () -> Void
     let onNumbered:  () -> Void
     let onChecklist: () -> Void
+    let onTable:     () -> Void
+    let onCode:      () -> Void
 
     var body: some View {
         HStack(spacing: 2) {
@@ -106,9 +110,14 @@ private struct FloatingToolbarContent: View {
             }
             Divider().frame(height: 16)
             Group {
-                iconBtn("list.bullet", action: onBullet)
-                iconBtn("list.number", action: onNumbered)
-                iconBtn("checklist",   action: onChecklist)
+                iconBtn("list.bullet",  action: onBullet)
+                iconBtn("list.number",  action: onNumbered)
+                iconBtn("checklist",    action: onChecklist)
+            }
+            Divider().frame(height: 16)
+            Group {
+                iconBtn("tablecells",   action: onTable)
+                iconBtn("chevron.left.forwardslash.chevron.right", action: onCode)
             }
         }
         .buttonStyle(.borderless)
