@@ -94,11 +94,17 @@ final class AppSettings {
         didSet { defaults.set(trashRetentionDays, forKey: Self.trashDaysKey) }
     }
 
+    /// Whether notes are stored in iCloud Drive (synced) rather than locally.
+    var syncEnabled: Bool {
+        didSet { defaults.set(syncEnabled, forKey: Self.syncKey) }
+    }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
     private static let qcCornerKey = "quickCaptureCorner"
     private static let trashDaysKey = "trashRetentionDays"
+    private static let syncKey = "syncEnabled"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -112,6 +118,7 @@ final class AppSettings {
         self.quickCaptureCorner = QuickCaptureCorner(rawValue: defaults.string(forKey: Self.qcCornerKey) ?? "")
             ?? .topRight
         self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
+        self.syncEnabled = defaults.bool(forKey: Self.syncKey)
     }
 
     func addRule() {

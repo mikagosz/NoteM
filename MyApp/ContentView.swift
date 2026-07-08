@@ -2,14 +2,15 @@ import SwiftUI
 
 @main struct MyApp: App {
     @State private var settings = AppSettings()
+    @State private var model = NotesModel()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(settings: settings)
+            ContentView(settings: settings, model: model)
         }
 
         Settings {
-            SettingsView(settings: settings)
+            SettingsView(settings: settings, model: model)
         }
     }
 }
@@ -17,6 +18,7 @@ import SwiftUI
 /// Preferences window with a tab per settings area.
 struct SettingsView: View {
     let settings: AppSettings
+    let model: NotesModel
 
     var body: some View {
         TabView {
@@ -26,6 +28,10 @@ struct SettingsView: View {
                 QuickCaptureManager.shared.refresh()
             }
             .tabItem { Label("Quick capture", systemImage: "bolt") }
+            SyncSettingsView(settings: settings, model: model) {
+                SyncManager.shared.refresh()
+            }
+            .tabItem { Label("Synchronizacja", systemImage: "arrow.triangle.2.circlepath") }
             TrashSettingsView(settings: settings)
                 .tabItem { Label("Kosz", systemImage: "trash") }
         }
@@ -42,11 +48,13 @@ enum SidebarSelection: Hashable {
 
 struct ContentView: View {
     let settings: AppSettings
+    let model: NotesModel
 
-    @State private var model = NotesModel()
     @State private var selection: SidebarSelection?
     /// When set, the notes list shows only notes carrying this tag.
     @State private var tagFilter: String?
+    /// Whether the conflict-resolution sheet is showing.
+    @State private var showConflicts = false
 
     private var filteredNotes: [Note] {
         guard let tagFilter else { return model.notes }
@@ -56,6 +64,19 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                if !model.conflicts.isEmpty {
+                    Section {
+                        Button {
+                            showConflicts = true
+                        } label: {
+                            Label("Konflikty synchronizacji: \(model.conflicts.count)", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Rozwiąż konflikty z innego Maca")
+                    }
+                }
+
                 Section {
                     Label("Zadania", systemImage: "checklist")
                         .tag(SidebarSelection.tasks)
@@ -115,7 +136,12 @@ struct ContentView: View {
             .onAppear {
                 model.rulesProvider = { settings.rules }
                 model.trashRetentionProvider = { settings.trashRetentionDays }
+                model.switchStorage(syncEnabled: settings.syncEnabled, moveExisting: false)
                 QuickCaptureManager.shared.start(model: model, settings: settings)
+                SyncManager.shared.start(model: model, settings: settings)
+            }
+            .sheet(isPresented: $showConflicts) {
+                ConflictResolverView(model: model) { showConflicts = false }
             }
             .navigationTitle("NoteM")
             .toolbar {
@@ -311,5 +337,5 @@ private struct TaskRow: View {
 }
 
 #Preview {
-    ContentView(settings: AppSettings())
+    ContentView(settings: AppSettings(), model: NotesModel())
 }
