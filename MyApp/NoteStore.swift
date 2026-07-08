@@ -11,6 +11,12 @@ final class NoteStore {
         static let meta = "meta.json"
     }
 
+    /// Reserved top-level directories under the store root.
+    static let trashDir = ".trash"
+    static let historyDir = ".history"
+    /// How many `note.md` snapshots to keep per note.
+    private static let historyLimit = 20
+
     /// Absolute URL of the store root (`~/Documents/NoteM/`).
     let rootURL: URL
 
@@ -78,15 +84,35 @@ final class NoteStore {
 
         var notes: [Note] = []
         for case let fileURL as URL in enumerator where fileURL.lastPathComponent == FileName.meta {
+            let folderURL = fileURL.deletingLastPathComponent()
+            let folderPath = relativePath(of: folderURL)
+            // Skip the trash: those notes are surfaced via loadTrashedNotes().
+            if folderPath == Self.trashDir || folderPath.hasPrefix(Self.trashDir + "/") { continue }
+            guard let data = try? Data(contentsOf: fileURL),
+                  let meta = try? decoder.decode(NoteMeta.self, from: data) else {
+                continue
+            }
+            notes.append(Note(meta: meta, folderPath: folderPath))
+        }
+
+        return notes
+    }
+
+    /// Loads notes currently sitting in `.trash/`.
+    func loadTrashedNotes() -> [Note] {
+        let trashURL = url(forFolderPath: Self.trashDir)
+        guard let enumerator = fileManager.enumerator(at: trashURL, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        var notes: [Note] = []
+        for case let fileURL as URL in enumerator where fileURL.lastPathComponent == FileName.meta {
             guard let data = try? Data(contentsOf: fileURL),
                   let meta = try? decoder.decode(NoteMeta.self, from: data) else {
                 continue
             }
             let folderURL = fileURL.deletingLastPathComponent()
-            let folderPath = relativePath(of: folderURL)
-            notes.append(Note(meta: meta, folderPath: folderPath))
+            notes.append(Note(meta: meta, folderPath: relativePath(of: folderURL)))
         }
-
         return notes
     }
 
@@ -100,10 +126,88 @@ final class NoteStore {
         let folderURL = url(forFolderPath: updated.folderPath)
         try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
 
+        // Snapshot the previous content before overwriting, as a safety net.
+        snapshotContent(for: updated, from: folderURL)
         writeContent(content, to: folderURL)
         writeMeta(updated.meta, to: folderURL)
 
         return updated
+    }
+
+    // MARK: - Trash
+
+    /// Moves a note's folder into `.trash/<id>`, recording where it came from and
+    /// when it was deleted. Returns the note with its trash `folderPath` and
+    /// metadata (or unchanged if the move fails).
+    @discardableResult
+    func trashNote(_ note: Note) -> Note {
+        let source = url(forFolderPath: note.folderPath)
+        guard fileManager.fileExists(atPath: source.path) else { return note }
+
+        let trashPath = Self.trashDir + "/" + note.id.uuidString
+        let destination = url(forFolderPath: trashPath)
+        try? fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: destination)
+        }
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+        } catch {
+            return note
+        }
+
+        var trashed = note
+        trashed.originalFolderPath = note.folderPath
+        trashed.deletedAt = Date()
+        trashed.folderPath = trashPath
+        writeMeta(trashed.meta, to: destination)
+        return trashed
+    }
+
+    /// Moves a trashed note back to its original location (disambiguating if
+    /// something now sits there) and clears its trash metadata.
+    @discardableResult
+    func restoreNote(_ note: Note) -> Note {
+        let source = url(forFolderPath: note.folderPath)
+        guard fileManager.fileExists(atPath: source.path) else { return note }
+
+        let target = note.originalFolderPath ?? (CategoryEngine.inbox + "/" + note.id.uuidString)
+        var finalPath = target
+        var destination = url(forFolderPath: finalPath)
+        try? fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fileManager.fileExists(atPath: destination.path) {
+            finalPath = target + "-" + note.id.uuidString.prefix(8)
+            destination = url(forFolderPath: finalPath)
+        }
+        do {
+            try fileManager.moveItem(at: source, to: destination)
+        } catch {
+            return note
+        }
+
+        var restored = note
+        restored.folderPath = finalPath
+        restored.originalFolderPath = nil
+        restored.deletedAt = nil
+        writeMeta(restored.meta, to: destination)
+        return restored
+    }
+
+    /// Permanently deletes trashed notes whose `deletedAt` is older than `days`.
+    func emptyTrash(olderThanDays days: Int) {
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        for note in loadTrashedNotes() {
+            if let deletedAt = note.deletedAt, deletedAt < cutoff {
+                deleteNote(note)
+            }
+        }
     }
 
     /// Moves a note's folder to `newFolderPath` (relative to the store root),
@@ -192,6 +296,42 @@ final class NoteStore {
             try? data.write(to: url)
         }
     }
+
+    /// Copies the existing `note.md` (if any) into `.history/<id>/<timestamp>.md`
+    /// and prunes the folder to the most recent `historyLimit` snapshots.
+    private func snapshotContent(for note: Note, from folderURL: URL) {
+        let contentURL = folderURL.appendingPathComponent(FileName.content)
+        guard let existing = try? Data(contentsOf: contentURL), !existing.isEmpty else { return }
+
+        let historyURL = url(forFolderPath: Self.historyDir)
+            .appendingPathComponent(note.id.uuidString, isDirectory: true)
+        try? fileManager.createDirectory(at: historyURL, withIntermediateDirectories: true)
+
+        let stamp = Self.snapshotFormatter.string(from: Date())
+        try? existing.write(to: historyURL.appendingPathComponent("\(stamp).md"))
+        pruneHistory(at: historyURL)
+    }
+
+    private func pruneHistory(at historyURL: URL) {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: historyURL,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        let snapshots = files.filter { $0.pathExtension == "md" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard snapshots.count > Self.historyLimit else { return }
+        for url in snapshots.prefix(snapshots.count - Self.historyLimit) {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
+    /// Millisecond-precision timestamp so snapshots within the same second don't
+    /// collide, e.g. "2026-07-08_10-00-00-123".
+    private static let snapshotFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
+        return formatter
+    }()
 
     /// Timestamp-based folder path, e.g. "2026-07-08_10-00-00".
     /// (Auto-categorization into named parent folders is a later phase.)

@@ -18,6 +18,11 @@ struct Note: Identifiable, Equatable {
     /// Category path relative to the store root, e.g. "Projects/2026-07-08_10-00".
     var folderPath: String
     var links: [UUID]
+    /// When the note was moved to the trash, or `nil` if it's active.
+    var deletedAt: Date?
+    /// The `folderPath` the note lived at before being trashed, so it can be
+    /// restored to the same place. `nil` for active notes.
+    var originalFolderPath: String?
 
     init(
         id: UUID = UUID(),
@@ -27,7 +32,9 @@ struct Note: Identifiable, Equatable {
         created: Date = Date(),
         modified: Date = Date(),
         folderPath: String,
-        links: [UUID] = []
+        links: [UUID] = [],
+        deletedAt: Date? = nil,
+        originalFolderPath: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,6 +44,8 @@ struct Note: Identifiable, Equatable {
         self.modified = modified
         self.folderPath = folderPath
         self.links = links
+        self.deletedAt = deletedAt
+        self.originalFolderPath = originalFolderPath
     }
 }
 
@@ -52,6 +61,9 @@ struct NoteMeta: Codable {
     var created: Date
     var modified: Date
     var links: [UUID]
+    /// Trash bookkeeping; absent in the metadata of active notes.
+    var deletedAt: Date?
+    var originalFolderPath: String?
 }
 
 extension Note {
@@ -64,7 +76,9 @@ extension Note {
             tags: tags,
             created: created,
             modified: modified,
-            links: links
+            links: links,
+            deletedAt: deletedAt,
+            originalFolderPath: originalFolderPath
         )
     }
 
@@ -79,7 +93,9 @@ extension Note {
             created: meta.created,
             modified: meta.modified,
             folderPath: folderPath,
-            links: meta.links
+            links: meta.links,
+            deletedAt: meta.deletedAt,
+            originalFolderPath: meta.originalFolderPath
         )
     }
 }

@@ -89,10 +89,16 @@ final class AppSettings {
         didSet { defaults.set(quickCaptureCorner.rawValue, forKey: Self.qcCornerKey) }
     }
 
+    /// Days a note stays in the trash before it's auto-deleted.
+    var trashRetentionDays: Int {
+        didSet { defaults.set(trashRetentionDays, forKey: Self.trashDaysKey) }
+    }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
     private static let qcCornerKey = "quickCaptureCorner"
+    private static let trashDaysKey = "trashRetentionDays"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -105,6 +111,7 @@ final class AppSettings {
         self.quickCaptureEnabled = defaults.bool(forKey: Self.qcEnabledKey)
         self.quickCaptureCorner = QuickCaptureCorner(rawValue: defaults.string(forKey: Self.qcCornerKey) ?? "")
             ?? .topRight
+        self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
     }
 
     func addRule() {
@@ -132,6 +139,35 @@ final class AppSettings {
         if let data = try? JSONEncoder().encode(rules) {
             defaults.set(data, forKey: Self.rulesKey)
         }
+    }
+}
+
+/// Preferences pane: how long notes stay in the trash before auto-deletion.
+struct TrashSettingsView: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Kosz")
+                .font(.headline)
+            Text("Usunięte notatki trafiają do kosza i są automatycznie kasowane po upływie "
+                 + "podanej liczby dni. Ustaw 0, aby wyłączyć automatyczne czyszczenie.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Stepper(value: $settings.trashRetentionDays, in: 0...365) {
+                if settings.trashRetentionDays == 0 {
+                    Text("Automatyczne czyszczenie: wyłączone")
+                } else {
+                    Text("Czyść po: \(settings.trashRetentionDays) dniach")
+                }
+            }
+            .frame(maxWidth: 320, alignment: .leading)
+
+            Spacer()
+        }
+        .padding(20)
+        .frame(width: 560, height: 380)
     }
 }
 

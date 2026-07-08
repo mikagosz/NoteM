@@ -25,6 +25,12 @@ final class NotesModel {
     /// Notes currently known to the UI, sorted by `modified` descending.
     private(set) var notes: [Note] = []
 
+    /// Trashed notes, most recently deleted first.
+    private(set) var trashedNotes: [Note] = []
+
+    /// Supplies the trash auto-clean window (days). Set by the UI from settings.
+    var trashRetentionProvider: () -> Int = { 30 }
+
     /// Supplies the current auto-filing rules at save time. Set by the UI from
     /// `AppSettings`; defaults to no rules.
     var rulesProvider: () -> [CategoryRule] = { [] }
@@ -33,9 +39,12 @@ final class NotesModel {
         reload()
     }
 
-    /// Reloads all notes from disk.
+    /// Reloads all notes from disk, purging expired trash first.
     func reload() {
+        store.emptyTrash(olderThanDays: trashRetentionProvider())
         notes = store.loadAllNotes().sorted { $0.modified > $1.modified }
+        trashedNotes = store.loadTrashedNotes()
+            .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
     }
 
     /// Creates a new empty note and inserts it at the top of the list.
@@ -56,10 +65,26 @@ final class NotesModel {
         return notes.first(where: { $0.id == note.id }) ?? note
     }
 
-    /// Deletes a note from disk and from the list.
+    /// Moves a note to the trash (soft delete): it leaves the main list but its
+    /// folder is preserved under `.trash/` until restored or purged.
     func delete(_ note: Note) {
-        store.deleteNote(note)
+        let trashed = store.trashNote(note)
         notes.removeAll { $0.id == note.id }
+        trashedNotes.insert(trashed, at: 0)
+    }
+
+    /// Restores a trashed note back to its original location.
+    func restore(_ note: Note) {
+        let restored = store.restoreNote(note)
+        trashedNotes.removeAll { $0.id == note.id }
+        notes.insert(restored, at: 0)
+        notes.sort { $0.modified > $1.modified }
+    }
+
+    /// Permanently deletes a trashed note's folder from disk.
+    func deletePermanently(_ note: Note) {
+        store.deleteNote(note)
+        trashedNotes.removeAll { $0.id == note.id }
     }
 
     /// Current on-disk content of a note.
