@@ -136,6 +136,22 @@ struct ContentView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let error = SyncManager.shared.syncError {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.icloud.fill")
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.background.opacity(0.95))
+                    .overlay(alignment: .bottom) { Divider() }
+                }
+            }
             .onAppear {
                 model.rulesProvider = { settings.rules }
                 model.trashRetentionProvider = { settings.trashRetentionDays }

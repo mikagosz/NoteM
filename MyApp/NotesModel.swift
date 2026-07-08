@@ -107,15 +107,26 @@ final class NotesModel {
 
     // MARK: - Storage location (sync)
 
+    /// Write-error callback forwarded from the underlying store (set by SyncManager).
+    var onStoreWriteError: ((String) -> Void)? {
+        get { store.onWriteError }
+        set { store.onWriteError = newValue }
+    }
+
+    /// Current `lastModified` from `manifest.json` (used by SyncManager for polling).
+    func readManifestDate() -> Date? { store.readManifestDate() }
+
     /// Switches the store root between local and iCloud, optionally moving the
     /// existing notes across, then reloads.
     func switchStorage(syncEnabled: Bool, moveExisting: Bool) {
         let newRoot = StorageLocation.root(syncEnabled: syncEnabled)
         guard newRoot != store.rootURL else { return }
+        let savedErrorHandler = store.onWriteError
         if moveExisting {
             NoteStore.moveContents(from: store.rootURL, to: newRoot)
         }
         store = NoteStore(rootURL: newRoot)
+        store.onWriteError = savedErrorHandler
         reload()
     }
 
