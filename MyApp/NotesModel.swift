@@ -46,6 +46,16 @@ final class NotesModel {
         return note
     }
 
+    /// Creates a note pre-filled with `content` (used by quick capture). Runs
+    /// through the normal save path, so the title is derived and the
+    /// categorization rules apply.
+    @discardableResult
+    func createNote(content: String) -> Note {
+        let note = createNote()
+        save(note, content: content)
+        return notes.first(where: { $0.id == note.id }) ?? note
+    }
+
     /// Deletes a note from disk and from the list.
     func delete(_ note: Note) {
         store.deleteNote(note)

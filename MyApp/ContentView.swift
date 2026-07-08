@@ -9,8 +9,25 @@ import SwiftUI
         }
 
         Settings {
-            RulesSettingsView(settings: settings)
+            SettingsView(settings: settings)
         }
+    }
+}
+
+/// Preferences window with a tab per settings area.
+struct SettingsView: View {
+    let settings: AppSettings
+
+    var body: some View {
+        TabView {
+            RulesSettingsView(settings: settings)
+                .tabItem { Label("Katalogowanie", systemImage: "folder") }
+            QuickCaptureSettingsView(settings: settings) {
+                QuickCaptureManager.shared.refresh()
+            }
+            .tabItem { Label("Quick capture", systemImage: "bolt") }
+        }
+        .frame(width: 560, height: 420)
     }
 }
 
@@ -45,7 +62,10 @@ struct ContentView: View {
                     }
                 }
             }
-            .onAppear { model.rulesProvider = { settings.rules } }
+            .onAppear {
+                model.rulesProvider = { settings.rules }
+                QuickCaptureManager.shared.start(model: model, settings: settings)
+            }
             .navigationTitle("NoteM")
             .toolbar {
                 ToolbarItem {
