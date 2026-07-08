@@ -1,9 +1,15 @@
 import SwiftUI
 
 @main struct MyApp: App {
+    @State private var settings = AppSettings()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(settings: settings)
+        }
+
+        Settings {
+            RulesSettingsView(settings: settings)
         }
     }
 }
@@ -15,6 +21,8 @@ enum SidebarSelection: Hashable {
 }
 
 struct ContentView: View {
+    let settings: AppSettings
+
     @State private var model = NotesModel()
     @State private var selection: SidebarSelection?
 
@@ -37,6 +45,7 @@ struct ContentView: View {
                     }
                 }
             }
+            .onAppear { model.rulesProvider = { settings.rules } }
             .navigationTitle("NoteM")
             .toolbar {
                 ToolbarItem {
@@ -166,5 +175,5 @@ private struct TaskRow: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(settings: AppSettings())
 }

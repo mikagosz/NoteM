@@ -25,6 +25,10 @@ final class NotesModel {
     /// Notes currently known to the UI, sorted by `modified` descending.
     private(set) var notes: [Note] = []
 
+    /// Supplies the current auto-filing rules at save time. Set by the UI from
+    /// `AppSettings`; defaults to no rules.
+    var rulesProvider: () -> [CategoryRule] = { [] }
+
     init() {
         reload()
     }
@@ -92,15 +96,25 @@ final class NotesModel {
     /// No-op if the note is no longer in the list (e.g. it was just deleted) —
     /// this prevents a trailing autosave from recreating a deleted note.
     func save(_ note: Note, content: String) {
-        guard notes.contains(where: { $0.id == note.id }) else { return }
+        // Use the model's own copy for the authoritative folder path: the note
+        // may have been moved by the categorization engine since the editor
+        // loaded it, so the caller's `folderPath` can be stale.
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
 
-        var updated = note
-        updated.title = Self.deriveTitle(from: content)
-        let saved = store.saveNote(updated, content: content)
+        var current = notes[index]
+        current.title = Self.deriveTitle(from: content)
+        var saved = store.saveNote(current, content: content)
 
-        if let index = notes.firstIndex(where: { $0.id == saved.id }) {
-            notes[index] = saved
+        // Auto-file into a category folder based on the rules (first match wins).
+        if let newFolderPath = CategoryEngine.targetFolderPath(
+            content: content,
+            currentFolderPath: saved.folderPath,
+            rules: rulesProvider()
+        ) {
+            saved = store.moveNote(saved, toFolderPath: newFolderPath)
         }
+
+        notes[index] = saved
         notes.sort { $0.modified > $1.modified }
     }
 
