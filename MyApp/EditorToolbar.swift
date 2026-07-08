@@ -1,48 +1,125 @@
 import SwiftUI
+import AppKit
 
-/// Formatting toolbar shown above the note editor.
-struct EditorToolbar: View {
-    let controller: RichTextController
+// MARK: - Floating format panel
+
+/// Non-activating NSPanel that floats above text selections showing formatting
+/// buttons. Clicking buttons doesn't steal focus from the NSTextView so the
+/// selection stays active while the user formats.
+final class FloatingFormatPanel: NSPanel {
+
+    init(
+        onBold:      @escaping () -> Void,
+        onItalic:    @escaping () -> Void,
+        onH1:        @escaping () -> Void,
+        onH2:        @escaping () -> Void,
+        onBullet:    @escaping () -> Void,
+        onNumbered:  @escaping () -> Void,
+        onChecklist: @escaping () -> Void
+    ) {
+        super.init(
+            contentRect: .zero,
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        isMovableByWindowBackground = false
+        level = .floating
+        backgroundColor = .clear
+        hasShadow = true
+        isOpaque = false
+        acceptsMouseMovedEvents = true
+
+        let content = FloatingToolbarContent(
+            onBold: onBold, onItalic: onItalic,
+            onH1: onH1, onH2: onH2,
+            onBullet: onBullet, onNumbered: onNumbered,
+            onChecklist: onChecklist
+        )
+
+        let blur = NSVisualEffectView()
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = 10
+        blur.layer?.masksToBounds = true
+
+        let hosting = NSHostingView(rootView: content)
+        blur.addSubview(hosting)
+        contentView = blur
+
+        let size = hosting.fittingSize
+        setContentSize(size)
+        blur.frame = NSRect(origin: .zero, size: size)
+        hosting.frame = blur.frame
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(hideOnDeactivate),
+            name: NSApplication.didResignActiveNotification,
+            object: nil
+        )
+    }
+
+    /// Positions and shows the panel just above `selectionScreenRect`.
+    func show(above selectionScreenRect: NSRect) {
+        guard let size = contentView?.frame.size else { return }
+        var x = selectionScreenRect.midX - size.width / 2
+        var y = selectionScreenRect.maxY + 6
+
+        if let screen = NSScreen.main {
+            let vis = screen.visibleFrame
+            x = min(max(x, vis.minX + 4), vis.maxX - size.width - 4)
+            y = min(y, vis.maxY - size.height - 4)
+        }
+        setFrameOrigin(NSPoint(x: x, y: y))
+        if !isVisible { orderFront(nil) }
+    }
+
+    func hide() { if isVisible { orderOut(nil) } }
+
+    @objc private func hideOnDeactivate() { hide() }
+}
+
+// MARK: - SwiftUI content (private)
+
+private struct FloatingToolbarContent: View {
+    let onBold:      () -> Void
+    let onItalic:    () -> Void
+    let onH1:        () -> Void
+    let onH2:        () -> Void
+    let onBullet:    () -> Void
+    let onNumbered:  () -> Void
+    let onChecklist: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button(action: controller.toggleBold) {
-                Image(systemName: "bold")
+        HStack(spacing: 2) {
+            Group {
+                iconBtn("bold",        action: onBold)
+                iconBtn("italic",      action: onItalic)
             }
-            .help("Pogrubienie (⌘B)")
-
-            Button(action: controller.toggleItalic) {
-                Image(systemName: "italic")
-            }
-            .help("Kursywa (⌘I)")
-
             Divider().frame(height: 16)
-
-            Button("H1") { controller.toggleHeader(1) }.help("Nagłówek 1 (⌘1)")
-            Button("H2") { controller.toggleHeader(2) }.help("Nagłówek 2 (⌘2)")
-            Button("H3") { controller.toggleHeader(3) }.help("Nagłówek 3 (⌘3)")
-
+            Group {
+                Button("H1", action: onH1).font(.caption.bold())
+                Button("H2", action: onH2).font(.caption.bold())
+            }
             Divider().frame(height: 16)
-
-            Button(action: { controller.toggleList("bullet") }) {
-                Image(systemName: "list.bullet")
+            Group {
+                iconBtn("list.bullet", action: onBullet)
+                iconBtn("list.number", action: onNumbered)
+                iconBtn("checklist",   action: onChecklist)
             }
-            .help("Lista punktowana")
-
-            Button(action: { controller.toggleList("ordered") }) {
-                Image(systemName: "list.number")
-            }
-            .help("Lista numerowana")
-
-            Button(action: { controller.toggleChecklist() }) {
-                Image(systemName: "checklist")
-            }
-            .help("Lista zadań (⌘⇧L)")
-
-            Spacer()
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .fixedSize()
+    }
+
+    private func iconBtn(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).frame(width: 22, height: 22)
+        }
     }
 }

@@ -279,6 +279,34 @@ final class NoteStore {
         return (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
     }
 
+    /// Public absolute URL for a note's folder (used by the editor to resolve
+    /// attachment paths).
+    func folderURL(for note: Note) -> URL {
+        url(forFolderPath: note.folderPath)
+    }
+
+    // MARK: - Attachments
+
+    /// Copies `fileURL` into `noteFolder/attachments/`, disambiguating the name
+    /// if needed. Returns the final filename on success.
+    @discardableResult
+    func addAttachment(fileURL: URL, toNote note: Note) -> String? {
+        let attachDir = url(forFolderPath: note.folderPath).appendingPathComponent("attachments", isDirectory: true)
+        try? fileManager.createDirectory(at: attachDir, withIntermediateDirectories: true)
+
+        var dest = attachDir.appendingPathComponent(fileURL.lastPathComponent)
+        var counter = 1
+        while fileManager.fileExists(atPath: dest.path) {
+            let base = fileURL.deletingPathExtension().lastPathComponent
+            let ext  = fileURL.pathExtension
+            dest = attachDir.appendingPathComponent("\(base)-\(counter).\(ext)")
+            counter += 1
+        }
+        guard (try? fileManager.copyItem(at: fileURL, to: dest)) != nil else { return nil }
+        updateManifest()
+        return dest.lastPathComponent
+    }
+
     // MARK: - Manifest (for cross-Mac change detection)
 
     /// Writes `manifest.json` at the store root with the current timestamp.

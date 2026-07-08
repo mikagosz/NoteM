@@ -107,11 +107,11 @@ enum MarkdownStyler {
 
     // MARK: - Markdown -> NSAttributedString
 
-    static func attributedString(fromMarkdown markdown: String) -> NSAttributedString {
+    static func attributedString(fromMarkdown markdown: String, noteFolder: URL? = nil) -> NSAttributedString {
         let lines = markdown.components(separatedBy: "\n")
         let out = NSMutableAttributedString()
         for (index, line) in lines.enumerated() {
-            out.append(attributedParagraph(fromMarkdownLine: line))
+            out.append(attributedParagraph(fromMarkdownLine: line, noteFolder: noteFolder))
             if index < lines.count - 1 {
                 out.append(NSAttributedString(string: "\n", attributes: defaultTypingAttributes))
             }
@@ -119,7 +119,21 @@ enum MarkdownStyler {
         return out
     }
 
-    private static func attributedParagraph(fromMarkdownLine line: String) -> NSAttributedString {
+    private static func attributedParagraph(fromMarkdownLine line: String, noteFolder: URL? = nil) -> NSAttributedString {
+        // Inline image: ![alt](attachments/filename)
+        if line.hasPrefix("!["), let parenOpen = line.firstIndex(of: "("), let parenClose = line.lastIndex(of: ")") {
+            let path = String(line[line.index(after: parenOpen)..<parenClose])
+            if path.hasPrefix("attachments/"), let folder = noteFolder {
+                let fileURL = folder.appendingPathComponent(path)
+                if let image = NSImage(contentsOf: fileURL) {
+                    let attachment = NSTextAttachment()
+                    let cell = NSTextAttachmentCell(imageCell: image)
+                    attachment.attachmentCell = cell
+                    return NSAttributedString(attachment: attachment)
+                }
+            }
+        }
+
         // Header: #, ##, ### followed by a space.
         if let (level, content) = parseHeader(line) {
             return NSMutableAttributedString(

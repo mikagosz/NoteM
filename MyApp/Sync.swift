@@ -228,7 +228,7 @@ struct SyncSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 560, height: 400)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .confirmationDialog("Włączyć synchronizację iCloud?", isPresented: $showEnableDialog, titleVisibility: .visible) {
             Button("Przenieś istniejące notatki do iCloud") { apply(enabled: true, move: true) }
             Button("Zacznij od nowa w iCloud") { apply(enabled: true, move: false) }

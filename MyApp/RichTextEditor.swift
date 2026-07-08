@@ -13,15 +13,32 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     /// Called when a wiki link is clicked, with the linked note's title.
     var onOpenWikiLink: ((String) -> Void)?
 
+    /// Folder of the currently loaded note; used for resolving attachment paths.
+    var noteFolder: URL?
+    /// Called when the user drops a file — returns the attachment filename, or nil.
+    var onAddAttachment: ((URL) -> String?)?
+
     private var storedContent = NSAttributedString()
     private var isSettingText = false
+    private var floatingPanel: FloatingFormatPanel?
 
     // MARK: - Attaching / content
 
     func attach(_ textView: NSTextView) {
         self.textView = textView
+        floatingPanel = FloatingFormatPanel(
+            onBold:      { [weak self] in self?.toggleBold() },
+            onItalic:    { [weak self] in self?.toggleItalic() },
+            onH1:        { [weak self] in self?.toggleHeader(1) },
+            onH2:        { [weak self] in self?.toggleHeader(2) },
+            onBullet:    { [weak self] in self?.toggleList("bullet") },
+            onNumbered:  { [weak self] in self?.toggleList("ordered") },
+            onChecklist: { [weak self] in self?.toggleChecklist() }
+        )
         applyStoredContent()
     }
+
+    func hideFloatingPanel() { floatingPanel?.hide() }
 
     /// Sets the editor content (e.g. when a note loads).
     func setContent(_ content: NSAttributedString) {
@@ -42,6 +59,18 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         guard !isSettingText, let textView else { return }
         onChange?(textView.attributedString())
+    }
+
+    /// Shows / hides the floating format panel whenever the selection changes.
+    func textViewDidChangeSelection(_ notification: Notification) {
+        guard let textView else { return }
+        let sel = textView.selectedRange()
+        guard sel.length > 0, textView.window?.isKeyWindow == true else {
+            floatingPanel?.hide()
+            return
+        }
+        let screenRect = textView.firstRect(forCharacterRange: sel, actualRange: nil)
+        floatingPanel?.show(above: screenRect)
     }
 
     /// Follow clicked wiki links (other schemes fall through to the default).
@@ -460,6 +489,46 @@ final class NoteTextView: NSTextView {
         super.paste(sender)
     }
 
+    // MARK: - Drag & drop (attachments)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self]) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] else {
+            return super.performDragOperation(sender)
+        }
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard !fileURLs.isEmpty else { return super.performDragOperation(sender) }
+
+        for url in fileURLs {
+            guard let filename = controller?.onAddAttachment?(url) else { continue }
+            let isImage = ["jpg","jpeg","png","gif","heic","tiff","bmp","webp","svg"]
+                .contains(url.pathExtension.lowercased())
+
+            if isImage, let folder = controller?.noteFolder {
+                let imageURL = folder.appendingPathComponent("attachments/\(filename)")
+                if let image = NSImage(contentsOf: imageURL) {
+                    let attachment = NSTextAttachment()
+                    attachment.image = image
+                    let maxW: CGFloat = 480
+                    if image.size.width > maxW {
+                        let s = maxW / image.size.width
+                        attachment.bounds = CGRect(x: 0, y: 0, width: maxW, height: image.size.height * s)
+                    }
+                    insertAttributed(NSAttributedString(attachment: attachment))
+                    continue
+                }
+            }
+            let link = isImage
+                ? "![](attachments/\(filename))"
+                : "[\(url.lastPathComponent)](attachments/\(filename))"
+            insertAttributed(NSAttributedString(string: link, attributes: MarkdownStyler.defaultTypingAttributes))
+        }
+        return true
+    }
+
     private func insertSanitized(_ attributed: NSAttributedString) {
         insertAttributed(PasteSanitizer.sanitized(attributed))
     }
@@ -499,6 +568,8 @@ struct RichTextEditor: NSViewRepresentable {
         textView.typingAttributes = MarkdownStyler.defaultTypingAttributes
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
+        textView.isAutomaticLinkDetectionEnabled = true
+        textView.registerForDraggedTypes([.fileURL])
 
         scrollView.documentView = textView
         controller.attach(textView)

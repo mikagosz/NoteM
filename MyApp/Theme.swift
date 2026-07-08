@@ -73,7 +73,7 @@ struct AppearanceSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 560, height: 380)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
