@@ -6,6 +6,9 @@ extension NSAttributedString.Key {
     static let headerLevel = NSAttributedString.Key("noteHeaderLevel")
     /// List kind ("bullet" / "ordered") applied across a whole paragraph.
     static let listKind = NSAttributedString.Key("noteListKind")
+    /// Checklist item state (`Bool`, checked/unchecked) applied across a whole
+    /// paragraph. The paragraph begins with a checkbox text attachment.
+    static let checklist = NSAttributedString.Key("noteChecklist")
 }
 
 /// Two-way conversion between the editor's `NSAttributedString` and the plain
@@ -46,6 +49,31 @@ enum MarkdownStyler {
         return p
     }()
 
+    // MARK: - Checklists
+
+    /// A single checkbox rendered as a clickable text attachment (SF Symbol).
+    static func checkboxAttachmentString(checked: Bool) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        let name = checked ? "checkmark.square.fill" : "square"
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        if let image = NSImage(systemSymbolName: name, accessibilityDescription: checked ? "zrobione" : "do zrobienia")?
+            .withSymbolConfiguration(config) {
+            attachment.image = image
+        }
+        return NSAttributedString(attachment: attachment)
+    }
+
+    /// Builds a checklist paragraph: `[checkbox] content`, tagged `.checklist`.
+    static func checklistParagraph(checked: Bool, content: String) -> NSAttributedString {
+        let paragraph = NSMutableAttributedString(attributedString: checkboxAttachmentString(checked: checked))
+        paragraph.append(NSAttributedString(string: " ", attributes: defaultTypingAttributes))
+        paragraph.append(attributed(inline: content))
+        let full = NSRange(location: 0, length: paragraph.length)
+        paragraph.addAttribute(.checklist, value: checked, range: full)
+        paragraph.addAttribute(.paragraphStyle, value: listParagraphStyle, range: full)
+        return paragraph
+    }
+
     // MARK: - Markdown -> NSAttributedString
 
     static func attributedString(fromMarkdown markdown: String) -> NSAttributedString {
@@ -71,6 +99,11 @@ enum MarkdownStyler {
                     .foregroundColor: NSColor.labelColor
                 ]
             )
+        }
+
+        // Checklist item: "- [ ] " or "- [x] " (before the plain bullet check).
+        if let (checked, content) = parseChecklist(line) {
+            return checklistParagraph(checked: checked, content: content)
         }
 
         // Bulleted list: "- " or "* ".
@@ -148,6 +181,14 @@ enum MarkdownStyler {
             return String(repeating: "#", count: level) + " " + paragraph.string
         }
 
+        if let checked = paragraph.attribute(.checklist, at: 0, effectiveRange: nil) as? Bool {
+            let contentStart = checklistContentStart(in: paragraph)
+            let content = paragraph.attributedSubstring(
+                from: NSRange(location: contentStart, length: paragraph.length - contentStart)
+            )
+            return (checked ? "- [x] " : "- [ ] ") + inlineMarkdown(from: content)
+        }
+
         if let kind = paragraph.attribute(.listKind, at: 0, effectiveRange: nil) as? String {
             let text = paragraph.string
             if kind == "bullet", text.hasPrefix(bulletMarker) {
@@ -204,6 +245,49 @@ enum MarkdownStyler {
     }
 
     // MARK: - Parsing helpers
+
+    /// Parses a checklist line: "- [ ] text" / "- [x] text" (also "* [ ]").
+    static func parseChecklist(_ line: String) -> (checked: Bool, content: String)? {
+        for bullet in ["- ", "* "] where line.hasPrefix(bullet) {
+            let rest = line.dropFirst(bullet.count)
+            guard rest.hasPrefix("[") else { return nil }
+            let afterBracket = rest.dropFirst()
+            guard let mark = afterBracket.first,
+                  afterBracket.dropFirst().first == "]",
+                  afterBracket.dropFirst(2).first == " " else { return nil }
+            let content = String(afterBracket.dropFirst(3))
+            switch mark {
+            case " ": return (false, content)
+            case "x", "X": return (true, content)
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    /// Character index where a checklist paragraph's text begins, skipping the
+    /// checkbox attachment and its trailing space.
+    private static func checklistContentStart(in paragraph: NSAttributedString) -> Int {
+        let ns = paragraph.string as NSString
+        var index = 0
+        // Skip the attachment character (U+FFFC).
+        if index < ns.length, ns.character(at: index) == 0xFFFC { index += 1 }
+        // Skip a single following space.
+        if index < ns.length, ns.character(at: index) == 32 { index += 1 }
+        return index
+    }
+
+    /// Strips inline emphasis/link syntax, returning readable plain text — used
+    /// by the collected-tasks view.
+    static func plainText(fromInline markdown: String) -> String {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        guard let parsed = try? AttributedString(markdown: markdown, options: options) else {
+            return markdown
+        }
+        return String(parsed.characters)
+    }
 
     private static func parseHeader(_ line: String) -> (level: Int, content: String)? {
         var level = 0

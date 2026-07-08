@@ -34,6 +34,11 @@ struct EditorToolbar: View {
             }
             .help("Lista numerowana")
 
+            Button(action: { controller.toggleChecklist() }) {
+                Image(systemName: "checklist")
+            }
+            .help("Lista zadań (⌘⇧L)")
+
             Spacer()
         }
         .buttonStyle(.borderless)

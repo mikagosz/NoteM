@@ -1,6 +1,18 @@
 import Foundation
 import Observation
 
+/// One unchecked checklist item collected from a note, for the "Zadania" view.
+struct TaskItem: Identifiable, Hashable {
+    let noteID: UUID
+    let noteTitle: String
+    /// Zero-based line index of the item within its note's `note.md`.
+    let lineIndex: Int
+    /// Display text (inline markdown stripped).
+    let text: String
+
+    var id: String { "\(noteID.uuidString)#\(lineIndex)" }
+}
+
 /// Observable UI-facing wrapper around `NoteStore`.
 ///
 /// Holds the in-memory list of notes (sorted newest-modified first) and
@@ -41,6 +53,40 @@ final class NotesModel {
         store.loadContent(for: note)
     }
 
+    // MARK: - Collected tasks
+
+    /// All unchecked checklist items (`- [ ]`) across every note, for the
+    /// "Zadania" view. Order follows the notes list, then line order.
+    func openTasks() -> [TaskItem] {
+        var items: [TaskItem] = []
+        for note in notes {
+            let lines = store.loadContent(for: note).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+                guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { continue }
+                let text = MarkdownStyler.plainText(fromInline: body).trimmingCharacters(in: .whitespaces)
+                items.append(TaskItem(noteID: note.id, noteTitle: note.title, lineIndex: index, text: text))
+            }
+        }
+        return items
+    }
+
+    /// Marks a collected task as done (`- [ ]` → `- [x]`) in its source note and
+    /// persists the change immediately.
+    func completeTask(_ task: TaskItem) {
+        guard let note = notes.first(where: { $0.id == task.noteID }) else { return }
+        var lines = store.loadContent(for: note).components(separatedBy: "\n")
+        guard task.lineIndex < lines.count else { return }
+
+        let line = lines[task.lineIndex]
+        let leading = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+        let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+        guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { return }
+
+        lines[task.lineIndex] = leading + "- [x] " + body
+        save(note, content: lines.joined(separator: "\n"))
+    }
+
     /// Persists `content` for `note`, deriving the title from the first line.
     ///
     /// No-op if the note is no longer in the list (e.g. it was just deleted) —
@@ -65,6 +111,11 @@ final class NotesModel {
             .split(separator: "\n", omittingEmptySubsequences: true)
             .first
             .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+
+        // Checklist item: strip "- [ ] " / "- [x] " down to its text.
+        if let (_, body) = MarkdownStyler.parseChecklist(line) {
+            line = body.trimmingCharacters(in: .whitespaces)
+        }
 
         // Leading header hashes.
         while line.hasPrefix("#") { line.removeFirst() }
