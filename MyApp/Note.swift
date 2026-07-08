@@ -1,0 +1,85 @@
+import Foundation
+
+/// A single note in NoteM.
+///
+/// On disk, each note lives in its own folder (`folderPath`, relative to the
+/// store root) that contains a `note.md` (plain text for now) and a `meta.json`.
+/// `folderPath` and the note's textual content are *not* persisted inside
+/// `meta.json` — `folderPath` is derived from where the folder sits on disk,
+/// and the content lives in `note.md`.
+struct Note: Identifiable, Equatable {
+    let id: UUID
+    var title: String
+    /// Optional manual prefix / number for the note.
+    var number: String?
+    var tags: [String]
+    var created: Date
+    var modified: Date
+    /// Category path relative to the store root, e.g. "Projects/2026-07-08_10-00".
+    var folderPath: String
+    var links: [UUID]
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        number: String? = nil,
+        tags: [String] = [],
+        created: Date = Date(),
+        modified: Date = Date(),
+        folderPath: String,
+        links: [UUID] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.number = number
+        self.tags = tags
+        self.created = created
+        self.modified = modified
+        self.folderPath = folderPath
+        self.links = links
+    }
+}
+
+/// The subset of `Note` that is serialized into `meta.json`.
+///
+/// Deliberately excludes `folderPath` (reconstructed from the on-disk location)
+/// and the note's content (stored in `note.md`).
+struct NoteMeta: Codable {
+    let id: UUID
+    var title: String
+    var number: String?
+    var tags: [String]
+    var created: Date
+    var modified: Date
+    var links: [UUID]
+}
+
+extension Note {
+    /// Builds the persistable metadata for this note.
+    var meta: NoteMeta {
+        NoteMeta(
+            id: id,
+            title: title,
+            number: number,
+            tags: tags,
+            created: created,
+            modified: modified,
+            links: links
+        )
+    }
+
+    /// Reconstructs a full `Note` from its metadata plus the folder path it was
+    /// found at (relative to the store root).
+    init(meta: NoteMeta, folderPath: String) {
+        self.init(
+            id: meta.id,
+            title: meta.title,
+            number: meta.number,
+            tags: meta.tags,
+            created: meta.created,
+            modified: meta.modified,
+            folderPath: folderPath,
+            links: meta.links
+        )
+    }
+}
