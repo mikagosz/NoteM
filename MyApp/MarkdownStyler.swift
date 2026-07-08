@@ -112,10 +112,16 @@ enum MarkdownStyler {
             let intent = run.inlinePresentationIntent ?? []
             let bold = intent.contains(.stronglyEmphasized)
             let italic = intent.contains(.emphasized)
-            result.append(NSAttributedString(
-                string: text,
-                attributes: [.font: font(bold: bold, italic: italic), .foregroundColor: NSColor.labelColor]
-            ))
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font(bold: bold, italic: italic),
+                .foregroundColor: NSColor.labelColor
+            ]
+            if let url = run.link {
+                attributes[.link] = url
+                attributes[.foregroundColor] = NSColor.linkColor
+                attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            result.append(NSAttributedString(string: text, attributes: attributes))
         }
         return result
     }
@@ -163,15 +169,25 @@ enum MarkdownStyler {
         return inlineMarkdown(from: paragraph)
     }
 
-    /// Serializes inline emphasis by wrapping runs in `**` / `*` / `***`.
+    /// Serializes inline emphasis (`**`/`*`/`***`) and links (`[text](url)`).
     private static func inlineMarkdown(from attributed: NSAttributedString) -> String {
         var result = ""
-        let full = NSRange(location: 0, length: attributed.length)
-        attributed.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
-            let font = value as? NSFont ?? bodyFont
+        let ns = attributed.string as NSString
+        var index = 0
+        while index < attributed.length {
+            var range = NSRange(location: 0, length: 0)
+            let attrs = attributed.attributes(at: index, effectiveRange: &range)
+            let font = attrs[.font] as? NSFont ?? bodyFont
             let traits = font.fontDescriptor.symbolicTraits
-            let text = (attributed.string as NSString).substring(with: range)
-            result += wrap(text, bold: traits.contains(.bold), italic: traits.contains(.italic))
+            let text = ns.substring(with: range)
+            var piece = wrap(text, bold: traits.contains(.bold), italic: traits.contains(.italic))
+            if let url = attrs[.link] as? URL {
+                piece = "[\(piece)](\(url.absoluteString))"
+            } else if let string = attrs[.link] as? String {
+                piece = "[\(piece)](\(string))"
+            }
+            result += piece
+            index = NSMaxRange(range)
         }
         return result
     }
