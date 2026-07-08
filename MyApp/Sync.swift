@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
-import CoreServices
+
+// MARK: - Storage location
 
 /// Resolves the store root for local vs. iCloud storage.
 enum StorageLocation {
@@ -27,6 +28,15 @@ enum StorageLocation {
     }
 }
 
+// MARK: - Notification name
+
+extension Notification.Name {
+    /// Posted by NoteStore after each successful manifest write.
+    static let noteMStoreDidWriteManifest = Notification.Name("noteMStoreDidWriteManifest")
+}
+
+// MARK: - Conflict model
+
 /// A note id that exists in more than one folder — i.e. an unresolved sync
 /// conflict between two machines editing offline.
 struct NoteConflict: Identifiable {
@@ -35,110 +45,126 @@ struct NoteConflict: Identifiable {
     let versions: [Note]
 }
 
-/// Watches a directory tree via FSEvents and calls `onChange` on the main queue
-/// whenever anything inside changes — used to pick up edits synced in from
-/// another Mac.
-final class FileSystemWatcher {
-    private var stream: FSEventStreamRef?
-    private let onChange: () -> Void
+// MARK: - SyncManager (polling-based, no FSEvents / no entitlements)
 
-    init(onChange: @escaping () -> Void) {
-        self.onChange = onChange
-    }
-
-    func start(path: String) {
-        stop()
-        var context = FSEventStreamContext(
-            version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
-            retain: nil,
-            release: nil,
-            copyDescription: nil
-        )
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
-            guard let info else { return }
-            let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue()
-            watcher.onChange()
-        }
-        guard let stream = FSEventStreamCreate(
-            kCFAllocatorDefault,
-            callback,
-            &context,
-            [path] as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            0.8, // latency (s): coalesce bursts of sync activity
-            FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
-        ) else { return }
-
-        self.stream = stream
-        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
-        FSEventStreamStart(stream)
-    }
-
-    func stop() {
-        guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
-        self.stream = nil
-    }
-
-    deinit { stop() }
-}
-
-/// Owns the filesystem watcher and refreshes the notes list when the store
-/// changes underneath the app.
+/// Polls `manifest.json` every 7 seconds to detect changes made on another Mac
+/// and reloads notes accordingly. Also monitors iCloud Drive availability.
 @MainActor
 @Observable
 final class SyncManager {
     static let shared = SyncManager()
 
-    /// Last time an external change was observed (for the status indicator).
+    /// Last time an external change was detected (shown in the UI).
     private(set) var lastActivity: Date?
+
+    /// Set when iCloud Drive becomes unavailable or a write fails.
+    /// `nil` means everything is working normally.
+    private(set) var syncError: String?
 
     private weak var model: NotesModel?
     private weak var settings: AppSettings?
-    private var watcher: FileSystemWatcher?
+
+    private var pollTimer: Timer?
+    /// The manifest timestamp we saw most recently (ours or another Mac's).
+    private var lastManifestDate: Date?
+    /// Observer token for the "we just wrote manifest locally" notification.
+    private var manifestObserver: Any?
+
+    // MARK: - Lifecycle
 
     func start(model: NotesModel, settings: AppSettings) {
         self.model = model
         self.settings = settings
+
+        // Propagate write errors from NoteStore to the UI.
+        model.onStoreWriteError = { [weak self] msg in
+            Task { @MainActor [weak self] in
+                self?.syncError = msg
+            }
+        }
+
+        // When we ourselves write the manifest, update lastManifestDate so
+        // the next poll won't treat our own change as an external one.
+        manifestObserver = NotificationCenter.default.addObserver(
+            forName: .noteMStoreDidWriteManifest,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.lastManifestDate = self?.model?.readManifestDate()
+            }
+        }
+
         refresh()
     }
 
-    /// (Re)starts the watcher on the current store root when sync is enabled.
+    /// (Re)starts or stops the polling timer based on the current sync setting.
     func refresh() {
-        watcher?.stop()
-        watcher = nil
+        pollTimer?.invalidate()
+        pollTimer = nil
+        syncError = nil
+
         guard let model, let settings, settings.syncEnabled else { return }
 
-        let watcher = FileSystemWatcher { [weak self] in
-            self?.lastActivity = Date()
-            self?.model?.reloadFromExternalChange()
+        // Seed initial timestamp so the first poll doesn't immediately reload.
+        lastManifestDate = model.readManifestDate()
+
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 7, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.poll() }
         }
-        watcher.start(path: model.rootURL.path)
-        self.watcher = watcher
+    }
+
+    /// Clears the current error and restarts the polling cycle.
+    func retrySync() {
+        syncError = nil
+        refresh()
+    }
+
+    // MARK: - Polling
+
+    private func poll() {
+        guard let model, let settings, settings.syncEnabled else { return }
+
+        // Detect iCloud Drive going away (disabled in System Preferences, etc.).
+        guard StorageLocation.iCloudRoot != nil else {
+            syncError = "iCloud Drive niedostępny — działam lokalnie"
+            return
+        }
+
+        // Clear a previous error if iCloud came back.
+        if syncError != nil { syncError = nil }
+
+        guard let current = model.readManifestDate() else { return }
+        guard current != lastManifestDate else { return }
+
+        lastManifestDate = current
+        model.reloadFromExternalChange()
+        lastActivity = Date()
     }
 }
+
+// MARK: - SyncSettingsView
 
 /// Preferences pane: iCloud sync toggle, status, path, and reveal-in-Finder.
 struct SyncSettingsView: View {
     @Bindable var settings: AppSettings
     let model: NotesModel
-    /// Called after storage changes so the watcher can be reconfigured.
+    /// Called after storage changes so the poller can be reconfigured.
     let onChange: () -> Void
 
     @State private var showEnableDialog = false
     @State private var showDisableDialog = false
 
     private var iCloudAvailable: Bool { StorageLocation.iCloudRoot != nil }
+    private var syncError: String? { SyncManager.shared.syncError }
+    private var lastActivity: Date? { SyncManager.shared.lastActivity }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Synchronizacja")
                 .font(.headline)
             Text("Przechowuj notatki w iCloud Drive, aby były dostępne i aktualne na innych Macach. "
-                 + "Zmiany z innego komputera pojawią się tu automatycznie.")
+                 + "Zmiany z innego komputera wykrywane są co ~7 sekund.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -154,6 +180,24 @@ struct SyncSettingsView: View {
                     .foregroundStyle(.orange)
             }
 
+            // Error banner with retry
+            if let error = syncError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.icloud.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Spróbuj ponownie") {
+                        SyncManager.shared.retrySync()
+                    }
+                    .font(.caption)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.1)))
+            }
+
             Divider()
 
             HStack(spacing: 8) {
@@ -161,6 +205,12 @@ struct SyncSettingsView: View {
                     .foregroundStyle(settings.syncEnabled ? .blue : .secondary)
                 Text(settings.syncEnabled ? "Notatki w iCloud Drive" : "Notatki lokalne (Dokumenty)")
                     .font(.callout)
+                Spacer()
+                if let date = lastActivity {
+                    Text("Ostatnia zmiana: \(date, format: .dateTime.hour().minute().second())")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             HStack(spacing: 8) {
@@ -178,7 +228,7 @@ struct SyncSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 560, height: 380)
+        .frame(width: 560, height: 400)
         .confirmationDialog("Włączyć synchronizację iCloud?", isPresented: $showEnableDialog, titleVisibility: .visible) {
             Button("Przenieś istniejące notatki do iCloud") { apply(enabled: true, move: true) }
             Button("Zacznij od nowa w iCloud") { apply(enabled: true, move: false) }
@@ -201,6 +251,8 @@ struct SyncSettingsView: View {
         onChange()
     }
 }
+
+// MARK: - ConflictResolverView
 
 /// Side-by-side conflict resolver: for each conflicted id, shows both versions
 /// and lets the user keep one (deleting the other).

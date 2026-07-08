@@ -19,6 +19,9 @@ final class NoteStore {
     static let historyDir = ".history"
     /// How many `note.md` snapshots to keep per note.
     private static let historyLimit = 20
+    private static let manifestFile = "manifest.json"
+
+    private struct Manifest: Codable { var lastModified: Date }
 
     /// Absolute URL of the store root (`~/Documents/NoteM/`).
     let rootURL: URL
@@ -26,6 +29,9 @@ final class NoteStore {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+
+    /// Called when a manifest write fails (e.g. iCloud Drive unavailable).
+    var onWriteError: ((String) -> Void)?
 
     /// Errors thrown by the store.
     enum StoreError: Error {
@@ -71,6 +77,7 @@ final class NoteStore {
 
         writeContent("", to: folderURL)
         writeMeta(note.meta, to: folderURL)
+        updateManifest()
 
         return note
     }
@@ -133,6 +140,7 @@ final class NoteStore {
         snapshotContent(for: updated, from: folderURL)
         writeContent(content, to: folderURL)
         writeMeta(updated.meta, to: folderURL)
+        updateManifest()
 
         return updated
     }
@@ -167,6 +175,7 @@ final class NoteStore {
         trashed.deletedAt = Date()
         trashed.folderPath = trashPath
         writeMeta(trashed.meta, to: destination)
+        updateManifest()
         return trashed
     }
 
@@ -199,6 +208,7 @@ final class NoteStore {
         restored.originalFolderPath = nil
         restored.deletedAt = nil
         writeMeta(restored.meta, to: destination)
+        updateManifest()
         return restored
     }
 
@@ -250,6 +260,7 @@ final class NoteStore {
     func updateMeta(_ note: Note) -> Note {
         let folderURL = url(forFolderPath: note.folderPath)
         writeMeta(note.meta, to: folderURL)
+        updateManifest()
         return note
     }
 
@@ -257,6 +268,7 @@ final class NoteStore {
     func deleteNote(_ note: Note) {
         let folderURL = url(forFolderPath: note.folderPath)
         try? fileManager.removeItem(at: folderURL)
+        updateManifest()
     }
 
     /// Reads the `note.md` content for a given note, or an empty string if
@@ -265,6 +277,30 @@ final class NoteStore {
         let contentURL = url(forFolderPath: note.folderPath)
             .appendingPathComponent(FileName.content)
         return (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
+    }
+
+    // MARK: - Manifest (for cross-Mac change detection)
+
+    /// Writes `manifest.json` at the store root with the current timestamp.
+    /// Called after every mutation so other Macs can detect changes without
+    /// scanning the full folder tree.
+    func updateManifest() {
+        let url = rootURL.appendingPathComponent(Self.manifestFile)
+        do {
+            let data = try encoder.encode(Manifest(lastModified: Date()))
+            try data.write(to: url, options: .atomic)
+            NotificationCenter.default.post(name: .noteMStoreDidWriteManifest, object: nil)
+        } catch {
+            onWriteError?("iCloud Drive niedostępny — działam lokalnie")
+        }
+    }
+
+    /// Returns `lastModified` from `manifest.json`, or `nil` if absent / unreadable.
+    func readManifestDate() -> Date? {
+        let url = rootURL.appendingPathComponent(Self.manifestFile)
+        guard let data = try? Data(contentsOf: url),
+              let manifest = try? decoder.decode(Manifest.self, from: data) else { return nil }
+        return manifest.lastModified
     }
 
     // MARK: - Category cover colour
@@ -290,6 +326,7 @@ final class NoteStore {
         if let data = try? encoder.encode(CategoryMeta(coverColorID: id)) {
             try? data.write(to: metaURL)
         }
+        updateManifest()
     }
 
     /// Moves every top-level entry (note folders, `.trash`, `.history`) from one
