@@ -94,6 +94,49 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func toggleBold() { toggleTrait(.boldFontMask, symbolic: .bold) }
     func toggleItalic() { toggleTrait(.italicFontMask, symbolic: .italic) }
 
+    func toggleUnderline() {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            let current = attrs[.underlineStyle] as? Int ?? 0
+            attrs[.underlineStyle] = current == 0 ? NSUnderlineStyle.single.rawValue : 0
+            textView.typingAttributes = attrs
+            return
+        }
+        var allUnderlined = true
+        storage.enumerateAttribute(.underlineStyle, in: range) { value, _, _ in
+            let v = value as? Int ?? 0
+            if v == 0 { allUnderlined = false }
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.addAttribute(
+            .underlineStyle,
+            value: allUnderlined ? 0 : NSUnderlineStyle.single.rawValue,
+            range: range
+        )
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
+    func insertLink() {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        let selectedText = range.length > 0 ? (storage.string as NSString).substring(with: range) : "link"
+        let template = "[\(selectedText)](url)"
+        let str = NSAttributedString(string: template, attributes: MarkdownStyler.defaultTypingAttributes)
+        guard textView.shouldChangeText(in: range, replacementString: template) else { return }
+        storage.replaceCharacters(in: range, with: str)
+        textView.didChangeText()
+        // Select the "url" part so user can immediately type the address.
+        let urlStart = range.location + selectedText.count + 3
+        let urlLen = 3
+        if urlStart + urlLen <= storage.length {
+            textView.setSelectedRange(NSRange(location: urlStart, length: urlLen))
+        }
+    }
+
     private func toggleTrait(_ mask: NSFontTraitMask, symbolic: NSFontDescriptor.SymbolicTraits) {
         guard let textView, let storage = textView.textStorage else { return }
         let range = textView.selectedRange()
@@ -522,7 +565,10 @@ final class NoteTextView: NSTextView {
     }
 
     private func writeNoteMType(_ attributed: NSAttributedString) {
-        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: attributed, requiringSecureCoding: false) else { return }
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+        archiver.encode(attributed, forKey: NSKeyedArchiveRootObjectKey)
+        archiver.finishEncoding()
+        let data = archiver.encodedData
         NSPasteboard.general.addTypes([.noteMRichText], owner: nil)
         NSPasteboard.general.setData(data, forType: .noteMRichText)
     }
@@ -532,12 +578,14 @@ final class NoteTextView: NSTextView {
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
 
-        // NoteM-to-NoteM: use our private type to preserve all custom attributes
-        // (headerLevel, listKind, checklist, attachments) without lossy RTF round-trip.
+        // NoteM-to-NoteM: our private type preserves all custom attributes without RTF loss.
         if let data = pasteboard.data(forType: .noteMRichText),
-           let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
-            insertAttributed(attributed)
-            return
+           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) {
+            unarchiver.requiresSecureCoding = false
+            if let attributed = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString {
+                insertAttributed(attributed)
+                return
+            }
         }
 
         if let data = pasteboard.data(forType: .rtf),

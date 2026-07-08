@@ -84,7 +84,83 @@ final class FloatingFormatPanel: NSPanel {
     @objc private func hideOnDeactivate() { hide() }
 }
 
-// MARK: - SwiftUI content (private)
+// MARK: - Persistent bottom format bar
+
+/// Always-visible formatting toolbar pinned to the bottom of the note editor.
+struct FormatBar: View {
+    let controller: RichTextController
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    // Text style
+                    group {
+                        fmtBtn("bold",   label: "Pogrubienie",  action: controller.toggleBold)
+                        fmtBtn("italic", label: "Kursywa",      action: controller.toggleItalic)
+                        fmtBtn("underline", label: "Podkreślenie", action: { controller.toggleUnderline() })
+                    }
+                    divider()
+                    // Headers
+                    group {
+                        headerBtn("H1", action: { controller.toggleHeader(1) })
+                        headerBtn("H2", action: { controller.toggleHeader(2) })
+                        headerBtn("H3", action: { controller.toggleHeader(3) })
+                    }
+                    divider()
+                    // Lists
+                    group {
+                        fmtBtn("list.bullet",  label: "Lista punktowana", action: { controller.toggleList("bullet") })
+                        fmtBtn("list.number",  label: "Lista numerowana", action: { controller.toggleList("ordered") })
+                        fmtBtn("checklist",    label: "Checklist",        action: controller.toggleChecklist)
+                    }
+                    divider()
+                    // Insert
+                    group {
+                        fmtBtn("tablecells",                             label: "Tabela",    action: controller.insertTable)
+                        fmtBtn("chevron.left.forwardslash.chevron.right", label: "Kod",      action: controller.insertInlineCode)
+                        fmtBtn("link",                                   label: "Link",      action: { controller.insertLink() })
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+            .frame(height: 40)
+            .background(.bar)
+        }
+    }
+
+    private func group<V: View>(@ViewBuilder _ content: () -> V) -> some View {
+        HStack(spacing: 0) { content() }
+    }
+
+    private func divider() -> some View {
+        Divider().frame(height: 20).padding(.horizontal, 4)
+    }
+
+    private func fmtBtn(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+    }
+
+    private func headerBtn(_ text: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(text)
+    }
+}
+
+// MARK: - Floating format panel (appears above text selection)
 
 private struct FloatingToolbarContent: View {
     let onBold:      () -> Void
