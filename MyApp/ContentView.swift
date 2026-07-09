@@ -7,6 +7,13 @@ import AppKit
 final class ThinScroller: NSScroller {
     override class var isCompatibleWithOverlayScrollers: Bool { true }
 
+    // Report zero width so that even if the List momentarily flips its scroller
+    // back to the (legacy) system style on a content change, the scroll view
+    // doesn't inset its content — otherwise trailing content (the sidebar badge
+    // numbers) flickers inward for that instant. Scrolling still works via
+    // wheel/trackpad; the scroller is invisible and non-interactive anyway.
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat { 0 }
+
     // Draw nothing — no knob, no track, no arrows.
     override func draw(_ dirtyRect: NSRect) {}
     override func drawKnob() {}
@@ -508,6 +515,15 @@ struct ContentView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
             }
             .onChange(of: selection) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
+            }
+            // Sidebar badge counts (task count, note count) change when a note is
+            // flagged/created/deleted, which likewise resets the sidebar List's
+            // scroller and briefly insets the trailing numbers — re-thin it too.
+            .onChange(of: model.activeTaskCount) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
+            }
+            .onChange(of: model.notes.count) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
             }
             .sheet(isPresented: $showConflicts) {
