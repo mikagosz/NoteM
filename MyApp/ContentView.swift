@@ -20,8 +20,65 @@ final class ThinScroller: NSScroller {
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
 }
 
+/// Ultra-thin (1 pt) scroller used *only* by the Start-page columns. Unlike the
+/// invisible `ThinScroller`, it stays visible and legacy-styled so each column
+/// still shows its scroll position, while the 1 pt width keeps every column the
+/// same visible content width.
+final class StartColumnScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat { 1 }
+
+    override func draw(_ dirtyRect: NSRect) { drawKnob() }
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}   // no track
+    override func drawKnob() {
+        let knob = rect(for: .knob)
+        guard knob.width > 0, knob.height > 0 else { return }
+        NSColor.secondaryLabelColor.withAlphaComponent(0.6).setFill()
+        NSBezierPath(roundedRect: knob, xRadius: knob.width / 2, yRadius: knob.width / 2).fill()
+    }
+}
+
+/// Installs the 1 pt always-visible scroller on a Start-page column's scroll view.
+@MainActor private func applyStartColumnScroller(to scroll: NSScrollView) {
+    scroll.hasVerticalScroller = true
+    scroll.scrollerStyle = .legacy       // always visible (don't auto-hide)
+    scroll.autohidesScrollers = false
+    if !(scroll.verticalScroller is StartColumnScroller) {
+        scroll.verticalScroller = StartColumnScroller()
+    }
+}
+
+/// Finds the enclosing scroll view of a Start-page column and gives it the 1 pt
+/// scroller, retrying on a few passes since the scroll view may not exist yet.
+private struct StartColumnScrollerConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        for delay in [0.0, 0.15, 0.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if let scroll = view.enclosingScrollView { applyStartColumnScroller(to: scroll) }
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let scroll = nsView.enclosingScrollView { applyStartColumnScroller(to: scroll) }
+        }
+    }
+}
+
+extension View {
+    /// Apply to the content *inside* a Start-page column's `ScrollView`.
+    func startColumnScroller() -> some View {
+        background(StartColumnScrollerConfigurator().frame(width: 0, height: 0))
+    }
+}
+
 /// Applies the thin overlay scroller to a single scroll view.
 @MainActor private func applyThinScroller(to scroll: NSScrollView) {
+    // Leave the Start-page columns' dedicated 1 pt scroller untouched.
+    if scroll.verticalScroller is StartColumnScroller { return }
     scroll.scrollerStyle = .overlay
     scroll.autohidesScrollers = true
     if scroll.hasVerticalScroller, !(scroll.verticalScroller is ThinScroller) {
@@ -1112,7 +1169,7 @@ struct StartView: View {
 
     private var columnsView: some View {
         ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 16) {
+            HStack(alignment: .top, spacing: 3) {
                 ForEach(sections, id: \.title) { section in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 6) {
@@ -1121,16 +1178,17 @@ struct StartView: View {
                                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                         }
                         ScrollView {
-                            LazyVStack(spacing: 12) {
+                            LazyVStack(spacing: 7) {
                                 ForEach(section.notes) { note in card(for: note) }
                             }
-                            .thinScrollers()
+                            // Dedicated 1 pt always-visible scroller — only here.
+                            .startColumnScroller()
                         }
                     }
-                    .frame(width: 196)
+                    .frame(width: 210)
                 }
             }
-            .padding(16)
+            .padding(7)
             .thinScrollers()
         }
     }
