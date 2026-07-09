@@ -745,21 +745,76 @@ struct FolderFilterRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            if let onSetColor {
-                Menu("Kolor ikony folderu") {
-                    ForEach(AppTheme.all) { theme in
-                        Button {
-                            onSetColor(theme.id)
-                        } label: {
-                            Label(theme.name, systemImage: "circle.fill")
-                                .foregroundStyle(theme.accent)
-                        }
-                    }
-                    Divider()
-                    Button("Domyślny") { onSetColor(nil) }
-                }
+        .overlay {
+            // Native right-click colour menu instead of SwiftUI's `.contextMenu`,
+            // which on macOS draws a blue highlight ring that can't be removed.
+            if let onSetColor { FolderColorMenu(onSetColor: onSetColor) }
+        }
+    }
+}
+
+/// Transparent overlay that shows the folder-icon colour menu on right-click via
+/// a native `NSMenu` — no SwiftUI context-menu highlight ring. It stays invisible
+/// to left-clicks and hover, so the row's button keeps working normally.
+private struct FolderColorMenu: NSViewRepresentable {
+    let onSetColor: (String?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = RightClickView()
+        view.onSetColor = onSetColor
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? RightClickView)?.onSetColor = onSetColor
+    }
+
+    final class RightClickView: NSView {
+        var onSetColor: ((String?) -> Void)?
+
+        // Claim only right-mouse events; pass everything else (left-click, hover)
+        // through to the SwiftUI button underneath.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            switch NSApp.currentEvent?.type {
+            case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
+                return super.hitTest(point)
+            default:
+                return nil
             }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            let menu = NSMenu()
+            let parent = NSMenuItem(title: "Kolor ikony folderu", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for theme in AppTheme.all {
+                let item = NSMenuItem(title: theme.name, action: #selector(pick(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = theme.id
+                item.image = Self.swatch(NSColor(theme.accent))
+                submenu.addItem(item)
+            }
+            submenu.addItem(.separator())
+            let byDefault = NSMenuItem(title: "Domyślny", action: #selector(pickDefault), keyEquivalent: "")
+            byDefault.target = self
+            submenu.addItem(byDefault)
+            parent.submenu = submenu
+            menu.addItem(parent)
+            menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+        }
+
+        @objc private func pick(_ sender: NSMenuItem) { onSetColor?(sender.representedObject as? String) }
+        @objc private func pickDefault() { onSetColor?(nil) }
+
+        /// A small filled-circle colour swatch for a menu item.
+        private static func swatch(_ color: NSColor) -> NSImage {
+            let size = NSSize(width: 12, height: 12)
+            let image = NSImage(size: size)
+            image.lockFocus()
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+            image.unlockFocus()
+            return image
         }
     }
 }
