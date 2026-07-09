@@ -246,7 +246,9 @@ final class QuickCaptureManager {
         let target = corner ?? settings.quickCaptureCorners.first ?? .topRight
         let panel = QuickCapturePanel()
         panel.setContent(QuickCaptureView(
-            onSave: { [weak self] markdown, richData in self?.saveNote(markdown, richData: richData) },
+            onSave: { [weak self] markdown, richData, isTaskList in
+                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList)
+            },
             onClose: { [weak self, weak panel] in self?.closePanel(panel) }
         ))
         positionPanel(panel, corner: target, index: panels.count)
@@ -260,10 +262,10 @@ final class QuickCaptureManager {
         panels.removeAll { $0 === panel }
     }
 
-    private func saveNote(_ markdown: String, richData: Data?) {
+    private func saveNote(_ markdown: String, richData: Data?, isTaskList: Bool) {
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        model?.createNote(content: markdown, richData: richData)
+        model?.createNote(content: markdown, richData: richData, isTaskList: isTaskList)
     }
 
     /// Positions the panel just inside the given corner. `index` staggers stacked
@@ -385,8 +387,9 @@ final class QuickCapturePanel: NSPanel {
 /// main editor, so pasting keeps the source formatting 1:1 (colours, fonts,
 /// sizes, images) — identical to the main window.
 struct QuickCaptureView: View {
-    /// Called with the note's markdown and its full-fidelity rich archive.
-    let onSave: (String, Data?) -> Void
+    /// Called with the note's markdown, its full-fidelity rich archive, and
+    /// whether it should be saved as a task-list note.
+    let onSave: (String, Data?, Bool) -> Void
     let onClose: () -> Void
 
     /// Its own controller per panel, so several open notes don't share state.
@@ -394,6 +397,8 @@ struct QuickCaptureView: View {
     /// Black vs white note background — remembered across quick notes and launches,
     /// mirroring the toggle in the main editor.
     @AppStorage("quickCaptureDarkBackground") private var darkBackground = false
+    /// When on, the saved note is flagged as a planned task list.
+    @State private var isTaskList = false
 
     var body: some View {
         RichTextEditor(controller: controller, darkBackground: darkBackground)
@@ -411,6 +416,18 @@ struct QuickCaptureView: View {
             // bottom-right corner of the note.
             .overlay(alignment: .bottomTrailing) {
                 VStack(alignment: .trailing, spacing: 8) {
+                    Button {
+                        isTaskList.toggle()
+                    } label: {
+                        Image(systemName: isTaskList ? "checklist.checked" : "checklist")
+                            .foregroundStyle(isTaskList
+                                             ? Color.accentColor
+                                             : (darkBackground ? Color.white : Color.black))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(isTaskList ? "Notatka zostanie zapisana jako zadanie" : "Zapisz jako zadanie")
+
                     Button {
                         darkBackground.toggle()
                     } label: {
@@ -451,7 +468,7 @@ struct QuickCaptureView: View {
         if let attributed = controller.textView?.attributedString() {
             let markdown = MarkdownStyler.markdown(from: attributed)
             let richData = NoteRichArchive.data(from: attributed)
-            onSave(markdown, richData)
+            onSave(markdown, richData, isTaskList)
         }
         onClose()
     }

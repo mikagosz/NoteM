@@ -26,6 +26,12 @@ struct NoteDetailView: View {
     /// Opens the Settings window (gear lives in the right toolbar cluster).
     @Environment(\.openSettings) private var openSettings
 
+    /// Live task-list flag read from the model, so the toolbar toggle reflects
+    /// changes immediately (the passed-in `note` is a snapshot).
+    private var isTaskListNote: Bool {
+        model.notes.first(where: { $0.id == note.id })?.isTaskList ?? note.isTaskList
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             TagBar(
@@ -49,13 +55,23 @@ struct NoteDetailView: View {
         }
         .navigationTitle(note.title)
         .toolbar {
-            // Left cluster: search, pin, export PDF, print.
+            // Left cluster: search, task-list toggle, pin, export PDF, print.
             ToolbarItem(placement: .automatic) {
                 Button { controller.showFindBar() } label: {
                     Label("Szukaj w notatce", systemImage: "magnifyingglass")
                         .foregroundStyle(accent)
                 }
                 .help("Szukaj w notatce (⌘F)")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { model.toggleTaskList(note) } label: {
+                    Label(isTaskListNote ? "Usuń z zadań" : "Oznacz jako zadania",
+                          systemImage: isTaskListNote ? "checklist.checked" : "checklist")
+                        .foregroundStyle(accent)
+                }
+                .help(isTaskListNote
+                      ? "Ta notatka jest listą zadań — kliknij, by zdjąć oznaczenie"
+                      : "Oznacz notatkę jako listę zadań (pojawi się w „Zadania”)")
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.togglePin(note) } label: {

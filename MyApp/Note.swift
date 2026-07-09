@@ -20,6 +20,11 @@ struct Note: Identifiable, Equatable {
     var links: [UUID]
     /// Pinned notes are kept at the top of the list.
     var pinned: Bool
+    /// Marks the note as a planned task list — only these notes appear in the
+    /// "Zadania" view.
+    var isTaskList: Bool
+    /// Whether a task-list note has been ticked off as done in the "Zadania" view.
+    var taskDone: Bool
     /// When the note was moved to the trash, or `nil` if it's active.
     var deletedAt: Date?
     /// The `folderPath` the note lived at before being trashed, so it can be
@@ -36,6 +41,8 @@ struct Note: Identifiable, Equatable {
         folderPath: String,
         links: [UUID] = [],
         pinned: Bool = false,
+        isTaskList: Bool = false,
+        taskDone: Bool = false,
         deletedAt: Date? = nil,
         originalFolderPath: String? = nil
     ) {
@@ -48,6 +55,8 @@ struct Note: Identifiable, Equatable {
         self.folderPath = folderPath
         self.links = links
         self.pinned = pinned
+        self.isTaskList = isTaskList
+        self.taskDone = taskDone
         self.deletedAt = deletedAt
         self.originalFolderPath = originalFolderPath
     }
@@ -67,6 +76,10 @@ struct NoteMeta: Codable {
     var links: [UUID]
     /// Optional so pre-pin `meta.json` files still decode (missing ⇒ not pinned).
     var pinned: Bool?
+    /// Optional so pre-task-list `meta.json` files still decode (missing ⇒ false).
+    var isTaskList: Bool?
+    /// Optional so older `meta.json` files still decode (missing ⇒ false).
+    var taskDone: Bool?
     /// Trash bookkeeping; absent in the metadata of active notes.
     var deletedAt: Date?
     var originalFolderPath: String?
@@ -84,6 +97,8 @@ extension Note {
             modified: modified,
             links: links,
             pinned: pinned,
+            isTaskList: isTaskList,
+            taskDone: taskDone,
             deletedAt: deletedAt,
             originalFolderPath: originalFolderPath
         )
@@ -102,6 +117,8 @@ extension Note {
             folderPath: folderPath,
             links: meta.links,
             pinned: meta.pinned ?? false,
+            isTaskList: meta.isTaskList ?? false,
+            taskDone: meta.taskDone ?? false,
             deletedAt: meta.deletedAt,
             originalFolderPath: meta.originalFolderPath
         )
