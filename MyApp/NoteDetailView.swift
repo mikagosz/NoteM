@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 struct NoteDetailView: View {
     let note: Note
     let model: NotesModel
+    /// Theme accent colour, so toolbar icons and the tag bar follow the theme.
+    var accent: Color = .accentColor
     /// Opens another note (used by wiki links and the backlinks panel).
     var openNote: (UUID) -> Void = { _ in }
 
@@ -16,17 +18,25 @@ struct NoteDetailView: View {
     /// Markdown as last loaded/saved — used to avoid spurious saves.
     @State private var loadedMarkdown: String?
     @State private var saveTask: Task<Void, Never>?
+    /// Set on any edit so colour-only changes (which don't alter the markdown)
+    /// still trigger a save of the rich archive.
+    @State private var dirty = false
+    /// Black vs white note background; remembered across notes and launches.
+    @AppStorage("noteDarkBackground") private var darkBackground = true
+    /// Opens the Settings window (gear lives in the right toolbar cluster).
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
             TagBar(
                 tags: note.tags,
                 suggestions: model.tagCounts.map(\.tag),
+                accent: accent,
                 onAdd: { model.setTags(note.tags + [$0], for: note) },
                 onRemove: { tag in model.setTags(note.tags.filter { $0 != tag }, for: note) }
             )
             Divider()
-            RichTextEditor(controller: controller)
+            RichTextEditor(controller: controller, darkBackground: darkBackground)
 
             let backlinks = model.backlinks(to: note)
             if !backlinks.isEmpty {
@@ -39,17 +49,56 @@ struct NoteDetailView: View {
         }
         .navigationTitle(note.title)
         .toolbar {
+            // Left cluster: search, pin, export PDF, print.
+            ToolbarItem(placement: .automatic) {
+                Button { controller.showFindBar() } label: {
+                    Label("Szukaj w notatce", systemImage: "magnifyingglass")
+                        .foregroundStyle(accent)
+                }
+                .help("Szukaj w notatce (⌘F)")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { model.togglePin(note) } label: {
+                    Label(note.pinned ? "Odepnij" : "Przypnij",
+                          systemImage: note.pinned ? "pin.fill" : "pin")
+                        .foregroundStyle(accent)
+                }
+                .help(note.pinned ? "Odepnij notatkę" : "Przypnij notatkę na górze")
+            }
             ToolbarItem(placement: .automatic) {
                 Button(action: exportToPDF) {
                     Label("Eksportuj PDF", systemImage: "arrow.down.doc")
+                        .foregroundStyle(accent)
                 }
                 .help("Eksportuj notatkę jako PDF")
             }
             ToolbarItem(placement: .automatic) {
                 Button(action: printNote) {
                     Label("Drukuj", systemImage: "printer")
+                        .foregroundStyle(accent)
                 }
                 .help("Drukuj notatkę")
+            }
+
+            // Flexible spacer breaks the glass background into a second cluster
+            // and pushes it to the far right.
+            ToolbarSpacer(.flexible)
+
+            // Right cluster: background toggle + settings (gear far right).
+            ToolbarItem(placement: .automatic) {
+                Button { darkBackground.toggle() } label: {
+                    Label(darkBackground ? "Białe tło" : "Czarne tło",
+                          systemImage: darkBackground ? "sun.max" : "moon")
+                        .foregroundStyle(accent)
+                }
+                .help(darkBackground ? "Przełącz na białe tło" : "Przełącz na czarne tło")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { openSettings() } label: {
+                    Image(systemName: "gear")
+                        .foregroundStyle(accent)
+                }
+                .help("Ustawienia")
             }
         }
         .task { load() }
@@ -63,10 +112,23 @@ struct NoteDetailView: View {
     private func load() {
         let markdown = model.content(for: note)
         loadedMarkdown = markdown
+        dirty = false
         let noteFolder = model.noteFolder(for: note)
         controller.noteFolder = noteFolder
-        controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder))
-        controller.onChange = { _ in scheduleSave() }
+
+        // Prefer the full-fidelity rich archive (colours, fonts, pasted
+        // formatting, images); fall back to markdown for notes saved before rich
+        // storage existed — they gain a note.rich on their next save.
+        if let data = model.richContent(for: note),
+           let attributed = NoteRichArchive.attributedString(from: data) {
+            controller.setContent(attributed)
+        } else {
+            controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder))
+        }
+        controller.onChange = { _ in
+            dirty = true
+            scheduleSave()
+        }
         controller.titlesProvider = { [model, note] in
             model.notes.filter { $0.id != note.id && !$0.title.isEmpty }.map(\.title)
         }
@@ -126,13 +188,19 @@ struct NoteDetailView: View {
         }
     }
 
-    /// Serializes the editor to markdown and saves it if changed.
+    /// Saves both representations: markdown (`note.md`, for text features) and the
+    /// full-fidelity rich archive (`note.rich`, the display source of truth).
+    /// Saves when the markdown changed OR any edit happened (e.g. a colour change
+    /// that leaves the markdown identical).
     private func flush() {
         guard let textView = controller.textView else { return }
-        let markdown = MarkdownStyler.markdown(from: textView.attributedString())
-        guard markdown != loadedMarkdown else { return }
-        model.save(note, content: markdown)
+        let attributed = textView.attributedString()
+        let markdown = MarkdownStyler.markdown(from: attributed)
+        guard dirty || markdown != loadedMarkdown else { return }
+        let richData = NoteRichArchive.data(from: attributed)
+        model.save(note, content: markdown, richData: richData)
         loadedMarkdown = markdown
+        dirty = false
     }
 }
 
@@ -169,6 +237,7 @@ struct BacklinksPanel: View {
 struct TagBar: View {
     let tags: [String]
     let suggestions: [String]
+    var accent: Color = .accentColor
     let onAdd: (String) -> Void
     let onRemove: (String) -> Void
 
@@ -188,9 +257,9 @@ struct TagBar: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "tag")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(accent)
                 ForEach(tags, id: \.self) { tag in
-                    TagChip(tag: tag) { onRemove(tag) }
+                    TagChip(tag: tag, accent: accent) { onRemove(tag) }
                 }
                 TextField("dodaj tag…", text: $input)
                     .textFieldStyle(.plain)
@@ -226,22 +295,24 @@ struct TagBar: View {
 /// A single tag rendered as a capsule with a remove button.
 struct TagChip: View {
     let tag: String
+    var accent: Color = .accentColor
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 3) {
             Text(tag)
                 .font(.caption)
+                .foregroundStyle(accent)
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(accent.opacity(0.7))
             .help("Usuń tag")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Capsule().fill(.quaternary))
+        .background(Capsule().fill(accent.opacity(0.15)))
     }
 }

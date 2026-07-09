@@ -8,6 +8,23 @@ extension NSPasteboard.PasteboardType {
     static let noteMRichText = NSPasteboard.PasteboardType("com.notem.richtext")
 }
 
+/// Lossless disk format for a note's attributed string: a keyed archive that
+/// preserves colours, fonts, sizes, inline images and NoteM's custom attributes.
+enum NoteRichArchive {
+    static func data(from attributed: NSAttributedString) -> Data {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+        archiver.encode(attributed, forKey: NSKeyedArchiveRootObjectKey)
+        archiver.finishEncoding()
+        return archiver.encodedData
+    }
+
+    static func attributedString(from data: Data) -> NSAttributedString? {
+        guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
+        unarchiver.requiresSecureCoding = false
+        return unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString
+    }
+}
+
 /// Drives formatting commands on the underlying `NSTextView` and reports edits
 /// back to SwiftUI. Owned by `NoteDetailView` as `@State` so it survives view
 /// updates; the text view is attached once in `RichTextEditor.makeNSView`.
@@ -48,6 +65,14 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     }
 
     func hideFloatingPanel() { floatingPanel?.hide() }
+
+    /// Shows the native find bar (⌘F) so the user can search within the note.
+    func showFindBar() {
+        guard let textView else { return }
+        let item = NSMenuItem()
+        item.tag = Int(NSTextFinder.Action.showFindInterface.rawValue)
+        textView.performTextFinderAction(item)
+    }
 
     /// Sets the editor content (e.g. when a note loads).
     func setContent(_ content: NSAttributedString) {
@@ -399,6 +424,106 @@ final class NoteTextView: NSTextView {
         return super.performKeyEquivalent(with: event)
     }
 
+    // MARK: - Polish context menu
+
+    /// The app isn't localized to Polish, so AppKit serves its standard editing
+    /// menu (Cut/Copy/Paste/Font/…) in English. We take that menu and rename the
+    /// items to Polish; actions and key equivalents are left untouched.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        Self.localizeToPolish(menu)
+        return menu
+    }
+
+    /// Exact English → Polish titles for the editing context menu and its submenus.
+    private static let polishMenuTitles: [String: String] = [
+        "Cut": "Wytnij",
+        "Copy": "Kopiuj",
+        "Paste": "Wklej",
+        "Paste and Match Style": "Wklej i dopasuj styl",
+        "Delete": "Usuń",
+        "Select All": "Zaznacz wszystko",
+        "Font": "Czcionka",
+        "Show Fonts": "Pokaż czcionki",
+        "Bold": "Pogrubienie",
+        "Italic": "Kursywa",
+        "Underline": "Podkreślenie",
+        "Outline": "Kontur",
+        "Styles": "Style",
+        "Bigger": "Większa",
+        "Smaller": "Mniejsza",
+        "Kern": "Kerning",
+        "Ligature": "Ligatury",
+        "Baseline": "Linia bazowa",
+        "Use Default": "Użyj domyślnych",
+        "Use None": "Nie używaj",
+        "Use All": "Użyj wszystkich",
+        "Superscript": "Indeks górny",
+        "Subscript": "Indeks dolny",
+        "Raise": "Podnieś",
+        "Lower": "Obniż",
+        "Copy Style": "Kopiuj styl",
+        "Paste Style": "Wklej styl",
+        "Show Colors": "Pokaż kolory",
+        "Spelling and Grammar": "Pisownia i gramatyka",
+        "Show Spelling and Grammar": "Pokaż pisownię i gramatykę",
+        "Check Document Now": "Sprawdź dokument teraz",
+        "Check Spelling While Typing": "Sprawdzaj pisownię podczas pisania",
+        "Check Grammar With Spelling": "Sprawdzaj gramatykę wraz z pisownią",
+        "Correct Spelling Automatically": "Automatycznie poprawiaj pisownię",
+        "Substitutions": "Podstawienia",
+        "Show Substitutions": "Pokaż podstawienia",
+        "Smart Copy/Paste": "Inteligentne kopiowanie/wklejanie",
+        "Smart Quotes": "Inteligentne cudzysłowy",
+        "Smart Dashes": "Inteligentne myślniki",
+        "Smart Links": "Inteligentne łącza",
+        "Data Detectors": "Wykrywanie danych",
+        "Text Replacement": "Zamiana tekstu",
+        "Transformations": "Przekształcenia",
+        "Make Upper Case": "Wielkie litery",
+        "Make Lower Case": "Małe litery",
+        "Capitalize": "Kapitaliki",
+        "Speech": "Mowa",
+        "Start Speaking": "Zacznij mówić",
+        "Stop Speaking": "Przestań mówić",
+        "AutoFill": "Autouzupełnianie",
+        "Writing Direction": "Kierunek pisania",
+        "Default": "Domyślny",
+        "Left to Right": "Od lewej do prawej",
+        "Right to Left": "Od prawej do lewej",
+        "Share": "Udostępnij",
+        "Translate": "Przetłumacz",
+        "Font…": "Czcionka…"
+    ]
+
+    /// English prefixes for items with a dynamic tail (e.g. Look Up "word").
+    private static let polishMenuPrefixes: [(String, String)] = [
+        ("Look Up", "Sprawdź"),
+        ("Search with Google", "Szukaj w Google"),
+        ("Search With Google", "Szukaj w Google"),
+        ("Translate", "Przetłumacz")
+    ]
+
+    private static func localizeToPolish(_ menu: NSMenu) {
+        for item in menu.items {
+            if let translated = translateMenuTitle(item.title) {
+                item.title = translated
+            }
+            if let submenu = item.submenu {
+                if let t = translateMenuTitle(submenu.title) { submenu.title = t }
+                localizeToPolish(submenu)
+            }
+        }
+    }
+
+    private static func translateMenuTitle(_ title: String) -> String? {
+        if let exact = polishMenuTitles[title] { return exact }
+        for (eng, pol) in polishMenuPrefixes where title.hasPrefix(eng) {
+            return pol + title.dropFirst(eng.count)
+        }
+        return nil
+    }
+
     /// Clicking a checklist's checkbox toggles its state (and autosaves) instead
     /// of moving the caret.
     override func mouseDown(with event: NSEvent) {
@@ -588,9 +713,17 @@ final class NoteTextView: NSTextView {
             }
         }
 
+        // Keep the source formatting 1:1 (colours, fonts, sizes, images). RTFD
+        // first so clipboard images come through, then RTF, then HTML.
+        if let data = pasteboard.data(forType: .rtfd),
+           let attributed = NSAttributedString(rtfd: data, documentAttributes: nil) {
+            insertExternal(attributed)
+            return
+        }
+
         if let data = pasteboard.data(forType: .rtf),
            let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
-            insertSanitized(attributed)
+            insertExternal(attributed)
             return
         }
 
@@ -603,7 +736,7 @@ final class NoteTextView: NSTextView {
                ],
                documentAttributes: nil
            ) {
-            insertSanitized(attributed)
+            insertExternal(attributed)
             return
         }
 
@@ -655,8 +788,27 @@ final class NoteTextView: NSTextView {
         return true
     }
 
-    private func insertSanitized(_ attributed: NSAttributedString) {
-        insertAttributed(PasteSanitizer.sanitized(attributed))
+    /// Inserts pasted-from-another-app content, first making achromatic text
+    /// (white / black / grey, or no colour at all) adaptive so it stays readable
+    /// against either note background — like Word's "Automatic" text colour.
+    /// Genuinely coloured text (red, blue, …) is left exactly as copied.
+    private func insertExternal(_ attributed: NSAttributedString) {
+        let adapted = NSMutableAttributedString(attributedString: attributed)
+        let full = NSRange(location: 0, length: adapted.length)
+        adapted.enumerateAttribute(.foregroundColor, in: full) { value, range, _ in
+            let color = value as? NSColor
+            if color == nil || Self.isAchromatic(color!) {
+                adapted.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+            }
+        }
+        insertAttributed(adapted)
+    }
+
+    /// True for near-white / near-black / grey colours (low saturation), which
+    /// should follow the theme rather than keep a fixed shade.
+    private static func isAchromatic(_ color: NSColor) -> Bool {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return true }
+        return rgb.saturationComponent < 0.12
     }
 
     private func insertAttributed(_ attributed: NSAttributedString) {
@@ -671,12 +823,18 @@ final class NoteTextView: NSTextView {
 /// SwiftUI wrapper around a scrollable `NoteTextView`.
 struct RichTextEditor: NSViewRepresentable {
     let controller: RichTextController
+    /// Black note background (with light text) when true, white (dark text) when false.
+    var darkBackground: Bool = false
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
+        // Thin overlay scrollbar that thickens on hover, regardless of the
+        // system "Show scroll bars" setting.
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
 
         let textView = NoteTextView(frame: .zero)
         textView.controller = controller
@@ -695,14 +853,37 @@ struct RichTextEditor: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.isAutomaticLinkDetectionEnabled = true
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.registerForDraggedTypes([.fileURL])
 
         scrollView.documentView = textView
         controller.attach(textView)
+        applyBackground(to: scrollView, textView: textView)
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        // Content and formatting are driven imperatively through the controller.
+        // Content and formatting are driven imperatively through the controller;
+        // only the black/white background is reconciled here.
+        if let textView = nsView.documentView as? NoteTextView {
+            applyBackground(to: nsView, textView: textView)
+        }
+    }
+
+    /// Switches the note area between a pure-black and pure-white background.
+    /// Setting the appearance makes the dynamic text colours (labelColor, header
+    /// colours) resolve to a readable shade automatically.
+    private func applyBackground(to scrollView: NSScrollView, textView: NoteTextView) {
+        let appearanceName: NSAppearance.Name = darkBackground ? .darkAqua : .aqua
+        let appearance = NSAppearance(named: appearanceName)
+        scrollView.appearance = appearance
+        textView.appearance = appearance
+
+        let color: NSColor = darkBackground ? .black : .white
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = color
+        textView.drawsBackground = true
+        textView.backgroundColor = color
     }
 }

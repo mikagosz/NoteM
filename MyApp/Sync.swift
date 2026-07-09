@@ -301,7 +301,7 @@ private struct ConflictRow: View {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(conflict.versions) { version in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(version.modified, format: .dateTime.day().month().year().hour().minute())
+                        Text(version.modified.noteMDisplay)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text(version.folderPath)

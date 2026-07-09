@@ -8,6 +8,10 @@ final class NoteStore {
     /// Names of the files stored inside every note folder.
     private enum FileName {
         static let content = "note.md"
+        /// Full-fidelity archive of the note's attributed string (colours, fonts,
+        /// pasted formatting, inline images). The source of truth for display;
+        /// `note.md` is kept alongside for text features (tasks, links, titles).
+        static let rich = "note.rich"
         static let meta = "meta.json"
     }
 
@@ -129,7 +133,7 @@ final class NoteStore {
     /// Overwrites `note.md` with `content` and rewrites `meta.json`, bumping
     /// `modified`. Returns the updated note.
     @discardableResult
-    func saveNote(_ note: Note, content: String) -> Note {
+    func saveNote(_ note: Note, content: String, richData: Data? = nil) -> Note {
         var updated = note
         updated.modified = Date()
 
@@ -139,6 +143,7 @@ final class NoteStore {
         // Snapshot the previous content before overwriting, as a safety net.
         snapshotContent(for: updated, from: folderURL)
         writeContent(content, to: folderURL)
+        writeRich(richData, to: folderURL)
         writeMeta(updated.meta, to: folderURL)
         updateManifest()
 
@@ -279,6 +284,14 @@ final class NoteStore {
         return (try? String(contentsOf: contentURL, encoding: .utf8)) ?? ""
     }
 
+    /// Reads the full-fidelity `note.rich` archive, or `nil` if the note predates
+    /// rich storage (in which case the caller rebuilds from `note.md`).
+    func loadRichData(for note: Note) -> Data? {
+        let url = url(forFolderPath: note.folderPath)
+            .appendingPathComponent(FileName.rich)
+        return try? Data(contentsOf: url)
+    }
+
     /// Public absolute URL for a note's folder (used by the editor to resolve
     /// attachment paths).
     func folderURL(for note: Note) -> URL {
@@ -395,6 +408,17 @@ final class NoteStore {
     private func writeContent(_ content: String, to folderURL: URL) {
         let url = folderURL.appendingPathComponent(FileName.content)
         try? content.data(using: .utf8)?.write(to: url)
+    }
+
+    /// Writes the rich archive, or removes a stale one when `data` is nil (e.g. a
+    /// markdown-only save such as completing a task) so display falls back to md.
+    private func writeRich(_ data: Data?, to folderURL: URL) {
+        let url = folderURL.appendingPathComponent(FileName.rich)
+        if let data {
+            try? data.write(to: url)
+        } else {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     private func writeMeta(_ meta: NoteMeta, to folderURL: URL) {

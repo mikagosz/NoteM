@@ -37,10 +37,15 @@ struct AppTheme: Identifiable, Hashable {
     }
 
     /// Accent colour for a theme id, or `nil` if unknown — used for per-folder
-    /// cover colours (which store a theme id).
+    /// cover colours (which store a theme id). Resolves legacy ids too, so a
+    /// folder coloured in an older version keeps its cover bar.
     static func color(id: String?) -> Color? {
         guard let id else { return nil }
-        return all.first { $0.id == id }?.accent
+        if let exact = all.first(where: { $0.id == id })?.accent { return exact }
+        let legacyMap = ["ocean": "blue", "forest": "green", "sunset": "orange",
+                         "rose": "pink", "neon purple": "purple"]
+        if let mapped = legacyMap[id] { return all.first { $0.id == mapped }?.accent }
+        return nil
     }
 }
 
@@ -64,26 +69,45 @@ struct AppearanceSettingsView: View {
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Wygląd")
-                .font(.headline)
-            Text("Wybierz motyw kolorystyczny. Kolor akcentu wpływa na przyciski, zaznaczenia i linki "
-                 + "w całej aplikacji. Kolor pojedynczego folderu ustawisz z menu kontekstowego notatki.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Wygląd")
+                    .font(.headline)
+                Text("Wybierz motyw kolorystyczny. Kolor akcentu wpływa na przyciski, zaznaczenia i linki "
+                     + "w całej aplikacji. Kolor pojedynczego folderu ustawisz z menu kontekstowego notatki.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(AppTheme.all) { theme in
-                    ThemeSwatch(theme: theme, isSelected: settings.themeID == theme.id) {
-                        settings.themeID = theme.id
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(AppTheme.all) { theme in
+                        ThemeSwatch(theme: theme, isSelected: settings.themeID == theme.id) {
+                            settings.themeID = theme.id
+                        }
                     }
                 }
-            }
 
-            Spacer()
+                Divider()
+                    .padding(.top, 6)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Widok strony Start")
+                        .font(.callout)
+                    Picker("Widok strony Start", selection: $settings.startLayout) {
+                        ForEach(StartLayout.allCases) { layout in
+                            Text(layout.label).tag(layout)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text("Sekcje: listy z nagłówkami dat. Kolumny: słupki obok siebie. Stosy: kliknij stos, by zobaczyć notatki z danego okresu.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .thinScrollers()
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

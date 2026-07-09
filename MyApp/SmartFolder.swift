@@ -7,6 +7,7 @@ enum SmartFolderCondition: Codable, Hashable {
     case modifiedToday
     case modifiedInDays(Int)
     case sourceFolder(String)
+    case pinned
 }
 
 /// A saved search that surfaces notes matching one or more conditions.
@@ -33,6 +34,8 @@ struct SmartFolder: Identifiable, Codable, Hashable {
                 return note.modified >= cutoff
             case .sourceFolder(let folder):
                 return note.folderPath.hasPrefix(folder + "/") || note.folderPath == folder
+            case .pinned:
+                return note.pinned
             }
         }
         return conjunctive ? conditions.allSatisfy(check) : conditions.contains(where: check)
@@ -54,7 +57,7 @@ struct SmartFolder: Identifiable, Codable, Hashable {
             id: przypieteID,
             name: "Przypięte",
             icon: "pin.fill",
-            conditions: [.tagContains("przypięte")],
+            conditions: [.pinned],
             conjunctive: true
         ),
     ]
