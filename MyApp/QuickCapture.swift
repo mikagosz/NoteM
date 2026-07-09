@@ -357,18 +357,20 @@ struct QuickCaptureTriggerView: View {
 final class QuickCapturePanel: NSPanel {
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
-            styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 400),
+            // Borderless: no titlebar, no chrome — the note fills the whole window.
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         isFloatingPanel = true
         level = .floating
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
         isMovableByWindowBackground = true
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
+        isOpaque = false
+        backgroundColor = .clear      // let the SwiftUI rounded corners show through
+        hasShadow = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
 
@@ -388,31 +390,32 @@ struct QuickCaptureView: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Szybka notatka")
-                .font(.headline)
-
-            TextEditor(text: $text)
-                .font(.body)
-                .frame(width: 328, height: 130)
-                .focused($focused)
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-
-            HStack {
-                Text("⌘↩ zapisz · Esc zamyka")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
+        TextEditor(text: $text)
+            .font(.body)
+            .focused($focused)
+            .scrollContentBackground(.hidden)
+            .frame(width: 360, height: 400)
+            .background(Color(nsColor: .windowBackgroundColor))
+            // Close (discard) button — bottom-left.
+            .overlay(alignment: .bottomLeading) {
+                Button("Zamknij") { onClose() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.small)
+                    .padding(.leading, 10)
+                    .padding(.bottom, 10)
+            }
+            // Save button pinned to the bottom-right corner of the note.
+            .overlay(alignment: .bottomTrailing) {
                 Button("Zapisz") { saveAndClose() }
                     .keyboardShortcut(.return, modifiers: [.command])
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 10)
             }
-        }
-        .padding(14)
-        .onAppear { focused = true }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .onAppear { focused = true }
         .onExitCommand { saveAndClose() }
     }
 
