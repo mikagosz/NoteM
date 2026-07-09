@@ -164,11 +164,13 @@ final class NotesModel {
 
     /// Creates a note pre-filled with `content` (used by quick capture). Runs
     /// through the normal save path, so the title is derived and the
-    /// categorization rules apply.
+    /// categorization rules apply. `richData` carries the full-fidelity archive
+    /// (pasted colours, fonts, images) so quick-capture notes keep 1:1 formatting
+    /// just like the main editor; pass `nil` for plain markdown.
     @discardableResult
-    func createNote(content: String) -> Note {
+    func createNote(content: String, richData: Data? = nil) -> Note {
         let note = createNote()
-        save(note, content: content)
+        save(note, content: content, richData: richData)
         return notes.first(where: { $0.id == note.id }) ?? note
     }
 

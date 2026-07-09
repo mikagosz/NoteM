@@ -246,7 +246,7 @@ final class QuickCaptureManager {
         let target = corner ?? settings.quickCaptureCorners.first ?? .topRight
         let panel = QuickCapturePanel()
         panel.setContent(QuickCaptureView(
-            onSave: { [weak self] text in self?.saveNote(text) },
+            onSave: { [weak self] markdown, richData in self?.saveNote(markdown, richData: richData) },
             onClose: { [weak self, weak panel] in self?.closePanel(panel) }
         ))
         positionPanel(panel, corner: target, index: panels.count)
@@ -260,10 +260,10 @@ final class QuickCaptureManager {
         panels.removeAll { $0 === panel }
     }
 
-    private func saveNote(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func saveNote(_ markdown: String, richData: Data?) {
+        let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        model?.createNote(content: text)
+        model?.createNote(content: markdown, richData: richData)
     }
 
     /// Positions the panel just inside the given corner. `index` staggers stacked
@@ -381,21 +381,23 @@ final class QuickCapturePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// Content of the quick-capture panel.
+/// Content of the quick-capture panel. Uses the same `RichTextEditor` as the
+/// main editor, so pasting keeps the source formatting 1:1 (colours, fonts,
+/// sizes, images) — identical to the main window.
 struct QuickCaptureView: View {
-    let onSave: (String) -> Void
+    /// Called with the note's markdown and its full-fidelity rich archive.
+    let onSave: (String, Data?) -> Void
     let onClose: () -> Void
 
-    @State private var text = ""
-    @FocusState private var focused: Bool
+    /// Its own controller per panel, so several open notes don't share state.
+    @State private var controller = RichTextController()
+    /// Black vs white note background — remembered across quick notes and launches,
+    /// mirroring the toggle in the main editor.
+    @AppStorage("quickCaptureDarkBackground") private var darkBackground = false
 
     var body: some View {
-        TextEditor(text: $text)
-            .font(.body)
-            .focused($focused)
-            .scrollContentBackground(.hidden)
+        RichTextEditor(controller: controller, darkBackground: darkBackground)
             .frame(width: 360, height: 400)
-            .background(Color(nsColor: .windowBackgroundColor))
             // Close (discard) button — bottom-left.
             .overlay(alignment: .bottomLeading) {
                 Button("Zamknij") { onClose() }
@@ -405,23 +407,52 @@ struct QuickCaptureView: View {
                     .padding(.leading, 10)
                     .padding(.bottom, 10)
             }
-            // Save button pinned to the bottom-right corner of the note.
+            // Background toggle above the Save button, and Save pinned to the
+            // bottom-right corner of the note.
             .overlay(alignment: .bottomTrailing) {
-                Button("Zapisz") { saveAndClose() }
-                    .keyboardShortcut(.return, modifiers: [.command])
-                    .buttonStyle(.borderedProminent)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button {
+                        darkBackground.toggle()
+                    } label: {
+                        Image(systemName: darkBackground ? "sun.max" : "moon")
+                            // Black on the light note background so it stays visible.
+                            .foregroundStyle(darkBackground ? Color.white : Color.black)
+                    }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 10)
+                    .help(darkBackground ? "Przełącz na białe tło" : "Przełącz na czarne tło")
+
+                    Button("Zapisz") { saveAndClose() }
+                        .keyboardShortcut(.return, modifiers: [.command])
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(.trailing, 10)
+                .padding(.bottom, 10)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .onAppear { focused = true }
-        .onExitCommand { saveAndClose() }
+            .onAppear {
+                controller.setContent(
+                    NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
+                )
+                // Put the caret in the editor so the user can type right away.
+                DispatchQueue.main.async {
+                    if let textView = controller.textView {
+                        textView.window?.makeFirstResponder(textView)
+                    }
+                }
+            }
+            .onDisappear { controller.hideFloatingPanel() }
+            .onExitCommand { saveAndClose() }
     }
 
     /// Esc / save button: saves only if something was typed, then closes.
     private func saveAndClose() {
-        onSave(text)
+        if let attributed = controller.textView?.attributedString() {
+            let markdown = MarkdownStyler.markdown(from: attributed)
+            let richData = NoteRichArchive.data(from: attributed)
+            onSave(markdown, richData)
+        }
         onClose()
     }
 }
