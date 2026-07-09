@@ -348,7 +348,7 @@ struct ContentView: View {
                     // overlay scroller on every render (e.g. after folder changes).
                     .thinScrollers()
 
-                    SidebarNavRow(label: "Zadania", icon: "checklist", isActive: selection == .tasks) {
+                    SidebarNavRow(label: "Zadania", icon: "checklist", count: model.activeTaskCount, isActive: selection == .tasks) {
                         selection = .tasks
                     }
                     .listRowInsets(sidebarFilterRowInsets)
@@ -827,74 +827,81 @@ struct SidebarNavRow: View {
     }
 }
 
-/// Collected unchecked checklist items from every note. Tapping a row opens the
-/// source note; the checkbox marks the item done in that note.
+/// "Zadania": one row per note flagged as a task list (via the button on its
+/// Start card or in the note's toolbar). Each row is a checkbox + the note title;
+/// ticking it off marks the whole note done (a green ✅) and enables a trash
+/// button to remove it. Tapping the title opens the note.
 struct TasksView: View {
     let model: NotesModel
     let openNote: (UUID) -> Void
 
-    @State private var tasks: [TaskItem] = []
-
     var body: some View {
         Group {
-            if tasks.isEmpty {
+            if model.taskNotes.isEmpty {
                 ContentUnavailableView(
                     "Brak zadań",
                     systemImage: "checklist",
-                    description: Text("Niezaznaczone punkty checklisty ze wszystkich notatek pojawią się tutaj.")
+                    description: Text("Oznacz notatkę jako listę zadań przyciskiem na kafelku (Start) lub w pasku otwartej notatki, a pojawi się tutaj.")
                 )
             } else {
                 List {
-                    ForEach(tasks) { task in
-                        TaskRow(
-                            task: task,
-                            onComplete: { complete(task) },
-                            onOpen: { openNote(task.noteID) }
+                    ForEach(model.taskNotes) { note in
+                        TaskNoteRow(
+                            note: note,
+                            onToggleDone: { model.toggleTaskDone(note) },
+                            onDelete: { model.delete(note) },
+                            onOpen: { openNote(note.id) }
                         )
                     }
                 }
             }
         }
         .navigationTitle("Zadania")
-        .onAppear { reload() }
-    }
-
-    private func reload() {
-        tasks = model.openTasks()
-    }
-
-    private func complete(_ task: TaskItem) {
-        model.completeTask(task)
-        reload()
     }
 }
 
-/// A single row in the "Zadania" view.
-private struct TaskRow: View {
-    let task: TaskItem
-    let onComplete: () -> Void
+/// A single row in the "Zadania" view: a bigger, bold-outlined checkbox that
+/// turns into a green ✅ when done, the note title, and a trash button that's
+/// only active once the task is ticked off.
+private struct TaskNoteRow: View {
+    let note: Note
+    let onToggleDone: () -> Void
+    let onDelete: () -> Void
     let onOpen: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Button(action: onComplete) {
-                Image(systemName: "square")
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            Button(action: onToggleDone) {
+                if note.taskDone {
+                    Text("✅").font(.system(size: 18))
+                } else {
+                    Image(systemName: "square")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
             }
             .buttonStyle(.plain)
-            .help("Oznacz jako zrobione")
+            .help(note.taskDone ? "Oznacz jako niezrobione" : "Oznacz jako zrobione")
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.text.isEmpty ? "(puste zadanie)" : task.text)
-                Text(task.noteTitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(note.title.isEmpty ? "Bez tytułu" : note.title)
+                .strikethrough(note.taskDone, color: .secondary)
+                .foregroundStyle(note.taskDone ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .lineLimit(1)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onOpen)
+
             Spacer()
+
+            // Delete becomes available only once the task is done.
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundStyle(note.taskDone ? AnyShapeStyle(.red) : AnyShapeStyle(.tertiary))
+            }
+            .buttonStyle(.plain)
+            .disabled(!note.taskDone)
+            .help(note.taskDone ? "Usuń notatkę do kosza" : "Najpierw oznacz jako zrobione")
         }
-        .padding(.vertical, 2)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onOpen)
+        .padding(.vertical, 4)
     }
 }
 
@@ -1100,16 +1107,19 @@ struct StartView: View {
     // MARK: - Reusable pieces
 
     private func card(for note: Note) -> some View {
-        Button { openNote(note.id) } label: {
-            NoteCard(
-                note: note,
-                accent: accent,
-                coverColor: AppTheme.color(id: model.categoryColorID(of: note)),
-                snippet: contentIndex[note.id] ?? "",
-                query: query
-            )
-        }
-        .buttonStyle(.plain)
+        // Open on tap via a gesture (not a wrapping Button) so the task-list
+        // toggle button inside the card reliably gets its own clicks on macOS.
+        NoteCard(
+            note: note,
+            accent: accent,
+            coverColor: AppTheme.color(id: model.categoryColorID(of: note)),
+            snippet: contentIndex[note.id] ?? "",
+            query: query,
+            isTaskList: note.isTaskList,
+            onToggleTaskList: { model.toggleTaskList(note) }
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { openNote(note.id) }
     }
 
     private func buildIndex() {
@@ -1172,6 +1182,10 @@ struct NoteCard: View {
     var snippet: String = ""
     /// Current search query, so matches can be highlighted.
     var query: String = ""
+    /// Whether the note is flagged as a planned task list.
+    var isTaskList: Bool = false
+    /// Toggles the task-list flag (button on the card); no-op by default.
+    var onToggleTaskList: () -> Void = {}
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -1200,7 +1214,7 @@ struct NoteCard: View {
                     .frame(width: 6)
             }
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
+                HStack(spacing: 6) {
                     Text(highlighted(note.title))
                         .font(.headline)
                         .lineLimit(1)
@@ -1210,6 +1224,20 @@ struct NoteCard: View {
                             .font(.caption)
                             .foregroundStyle(accent)
                     }
+                    // Mark / unmark this note as a planned task list. Its own
+                    // button so clicking it doesn't open the note.
+                    Button(action: onToggleTaskList) {
+                        Image(systemName: isTaskList ? "checklist.checked" : "checklist")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(accent)
+                            .opacity(isTaskList ? 1 : 0.6)
+                            .padding(4)
+                            .background(
+                                Circle().fill(isTaskList ? accent.opacity(0.15) : .clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(isTaskList ? "Usuń oznaczenie listy zadań" : "Oznacz jako listę zadań")
                 }
                 if !previewText.isEmpty {
                     Text(highlighted(previewText))

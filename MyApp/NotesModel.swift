@@ -168,8 +168,12 @@ final class NotesModel {
     /// (pasted colours, fonts, images) so quick-capture notes keep 1:1 formatting
     /// just like the main editor; pass `nil` for plain markdown.
     @discardableResult
-    func createNote(content: String, richData: Data? = nil) -> Note {
+    func createNote(content: String, richData: Data? = nil, isTaskList: Bool = false) -> Note {
         let note = createNote()
+        // Set the flag before saving so it lands in meta.json in one write.
+        if isTaskList, let index = notes.firstIndex(where: { $0.id == note.id }) {
+            notes[index].isTaskList = true
+        }
         save(note, content: content, richData: richData)
         return notes.first(where: { $0.id == note.id }) ?? note
     }
@@ -284,20 +288,35 @@ final class NotesModel {
 
     // MARK: - Collected tasks
 
-    /// All unchecked checklist items (`- [ ]`) across every note, for the
-    /// "Zadania" view. Order follows the notes list, then line order.
+    /// All unchecked checklist items (`- [ ]`) across every note. Order follows
+    /// the notes list, then line order.
     func openTasks() -> [TaskItem] {
+        notes.flatMap { openTasks(in: $0) }
+    }
+
+    /// Unchecked checklist items (`- [ ]`) within a single note, in line order.
+    func openTasks(in note: Note) -> [TaskItem] {
         var items: [TaskItem] = []
-        for note in notes {
-            let lines = store.loadContent(for: note).components(separatedBy: "\n")
-            for (index, line) in lines.enumerated() {
-                let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
-                guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { continue }
-                let text = MarkdownStyler.plainText(fromInline: body).trimmingCharacters(in: .whitespaces)
-                items.append(TaskItem(noteID: note.id, noteTitle: note.title, lineIndex: index, text: text))
-            }
+        let lines = store.loadContent(for: note).components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
+            guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { continue }
+            let text = MarkdownStyler.plainText(fromInline: body).trimmingCharacters(in: .whitespaces)
+            items.append(TaskItem(noteID: note.id, noteTitle: note.title, lineIndex: index, text: text))
         }
         return items
+    }
+
+    /// Notes flagged as planned task lists, for the "Zadania" view. Keeps the
+    /// notes-list order.
+    var taskNotes: [Note] {
+        notes.filter(\.isTaskList)
+    }
+
+    /// Number of active (not-yet-done) task-notes — shown as a badge next to the
+    /// "Zadania" sidebar row.
+    var activeTaskCount: Int {
+        notes.filter { $0.isTaskList && !$0.taskDone }.count
     }
 
     /// Marks a collected task as done (`- [ ]` → `- [x]`) in its source note and
@@ -359,6 +378,21 @@ final class NotesModel {
         notes[index].pinned.toggle()
         store.updateMeta(notes[index])
         notes.sort(by: Self.pinnedThenModified)
+    }
+
+    /// Toggles whether a note is a planned task list and persists it. Doesn't
+    /// touch content or the `modified` timestamp.
+    func toggleTaskList(_ note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        notes[index].isTaskList.toggle()
+        store.updateMeta(notes[index])
+    }
+
+    /// Toggles a task-note's done state (ticked off in "Zadania") and persists it.
+    func toggleTaskDone(_ note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        notes[index].taskDone.toggle()
+        store.updateMeta(notes[index])
     }
 
     /// Derives a display title from the first non-empty line of the content,

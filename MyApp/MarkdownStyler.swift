@@ -86,18 +86,35 @@ enum MarkdownStyler {
     /// checkboxes follow the selected colour (see ContentView).
     static var checkboxColor: NSColor = .controlAccentColor
 
-    /// A single checkbox rendered as a clickable text attachment (SF Symbol),
-    /// tinted with the current theme accent.
+    /// A single checkbox rendered as a clickable text attachment. Unchecked: a
+    /// larger empty square with a thicker outline (bold weight), tinted with the
+    /// theme accent. Checked: a real green ✅ emoji, so it reads as a checkmark
+    /// (a single-colour SF Symbol would collapse into a plain green blob).
     static func checkboxAttachmentString(checked: Bool) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        let name = checked ? "checkmark.square.fill" : "square"
-        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [checkboxColor]))
-        if let image = NSImage(systemSymbolName: name, accessibilityDescription: checked ? "zrobione" : "do zrobienia")?
-            .withSymbolConfiguration(config) {
-            attachment.image = image
+        if checked {
+            attachment.image = checkmarkEmojiImage()
+        } else {
+            // Bold weight on the empty square gives it the thicker border.
+            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .bold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [checkboxColor]))
+            attachment.image = NSImage(systemSymbolName: "square", accessibilityDescription: "do zrobienia")?
+                .withSymbolConfiguration(config)
         }
         return NSAttributedString(attachment: attachment)
+    }
+
+    /// Draws the ✅ emoji into an image so a completed checklist item shows a
+    /// proper green checkmark regardless of the note's text colour or background.
+    private static func checkmarkEmojiImage() -> NSImage {
+        let emoji = "✅" as NSString
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 15)]
+        let size = emoji.size(withAttributes: attrs)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        emoji.draw(at: .zero, withAttributes: attrs)
+        image.unlockFocus()
+        return image
     }
 
     /// Builds a checklist paragraph: `[checkbox] content`, tagged `.checklist`.
