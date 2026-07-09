@@ -82,11 +82,17 @@ enum MarkdownStyler {
 
     // MARK: - Checklists
 
-    /// A single checkbox rendered as a clickable text attachment (SF Symbol).
+    /// Accent colour used to tint checklist checkboxes. Set from the app theme so
+    /// checkboxes follow the selected colour (see ContentView).
+    static var checkboxColor: NSColor = .controlAccentColor
+
+    /// A single checkbox rendered as a clickable text attachment (SF Symbol),
+    /// tinted with the current theme accent.
     static func checkboxAttachmentString(checked: Bool) -> NSAttributedString {
         let attachment = NSTextAttachment()
         let name = checked ? "checkmark.square.fill" : "square"
         let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [checkboxColor]))
         if let image = NSImage(systemSymbolName: name, accessibilityDescription: checked ? "zrobione" : "do zrobienia")?
             .withSymbolConfiguration(config) {
             attachment.image = image

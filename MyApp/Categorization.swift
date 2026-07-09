@@ -85,8 +85,9 @@ final class AppSettings {
     var quickCaptureEnabled: Bool {
         didSet { defaults.set(quickCaptureEnabled, forKey: Self.qcEnabledKey) }
     }
-    var quickCaptureCorner: QuickCaptureCorner {
-        didSet { defaults.set(quickCaptureCorner.rawValue, forKey: Self.qcCornerKey) }
+    /// Which corners reveal the quick-capture icon. Several can be active at once.
+    var quickCaptureCorners: Set<QuickCaptureCorner> {
+        didSet { defaults.set(quickCaptureCorners.map(\.rawValue), forKey: Self.qcCornersKey) }
     }
 
     /// Days a note stays in the trash before it's auto-deleted.
@@ -104,6 +105,11 @@ final class AppSettings {
         didSet { defaults.set(themeID, forKey: Self.themeKey) }
     }
 
+    /// Layout of the Start page: sections, columns, or macOS-style stacks.
+    var startLayout: StartLayout {
+        didSet { defaults.set(startLayout.rawValue, forKey: Self.startLayoutKey) }
+    }
+
     /// The currently selected theme.
     var theme: AppTheme { AppTheme.theme(id: themeID) }
 
@@ -115,10 +121,12 @@ final class AppSettings {
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
-    private static let qcCornerKey = "quickCaptureCorner"
+    private static let qcCornerKey = "quickCaptureCorner"   // legacy single-corner value, kept for migration
+    private static let qcCornersKey = "quickCaptureCorners"
     private static let trashDaysKey = "trashRetentionDays"
     private static let syncKey = "syncEnabled"
     private static let themeKey = "themeID"
+    private static let startLayoutKey = "startLayout"
     private static let smartFoldersKey = "smartFolders"
 
     /// All smart folders: predefined first, then user-created.
@@ -135,11 +143,19 @@ final class AppSettings {
             self.rules = []
         }
         self.quickCaptureEnabled = defaults.bool(forKey: Self.qcEnabledKey)
-        self.quickCaptureCorner = QuickCaptureCorner(rawValue: defaults.string(forKey: Self.qcCornerKey) ?? "")
-            ?? .topRight
+        if let raw = defaults.array(forKey: Self.qcCornersKey) as? [String] {
+            self.quickCaptureCorners = Set(raw.compactMap(QuickCaptureCorner.init(rawValue:)))
+        } else if let legacy = defaults.string(forKey: Self.qcCornerKey),
+                  let corner = QuickCaptureCorner(rawValue: legacy) {
+            self.quickCaptureCorners = [corner]   // migrate the old single-corner setting
+        } else {
+            self.quickCaptureCorners = [.topRight]
+        }
         self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
         self.syncEnabled = defaults.bool(forKey: Self.syncKey)
         self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
+        self.startLayout = StartLayout(rawValue: defaults.string(forKey: Self.startLayoutKey) ?? "")
+            ?? .sections
         if let data = defaults.data(forKey: Self.smartFoldersKey),
            let decoded = try? JSONDecoder().decode([SmartFolder].self, from: data) {
             self.smartFolders = decoded

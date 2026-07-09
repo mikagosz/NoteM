@@ -72,7 +72,7 @@ final class NotesModel {
         // For conflicted ids, show the most recently modified version in the list.
         notes = grouped.values
             .compactMap { $0.max(by: { $0.modified < $1.modified }) }
-            .sorted { $0.modified > $1.modified }
+            .sorted(by: Self.pinnedThenModified)
 
         trashedNotes = store.loadTrashedNotes()
             .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
@@ -185,7 +185,7 @@ final class NotesModel {
         let restored = store.restoreNote(note)
         trashedNotes.removeAll { $0.id == note.id }
         notes.insert(restored, at: 0)
-        notes.sort { $0.modified > $1.modified }
+        notes.sort(by: Self.pinnedThenModified)
     }
 
     /// Permanently deletes a trashed note's folder from disk.
@@ -197,6 +197,12 @@ final class NotesModel {
     /// Current on-disk content of a note.
     func content(for note: Note) -> String {
         store.loadContent(for: note)
+    }
+
+    /// Full-fidelity rich archive of a note (colours, fonts, pasted formatting),
+    /// or `nil` for notes saved before rich storage existed.
+    func richContent(for note: Note) -> Data? {
+        store.loadRichData(for: note)
     }
 
     // MARK: - Categories (physical folders)
@@ -312,7 +318,10 @@ final class NotesModel {
     ///
     /// No-op if the note is no longer in the list (e.g. it was just deleted) —
     /// this prevents a trailing autosave from recreating a deleted note.
-    func save(_ note: Note, content: String) {
+    /// `richData` is the full-fidelity archive of the editor's attributed string;
+    /// pass `nil` for markdown-only saves (quick capture, task completion), which
+    /// clears any stale rich cache so display rebuilds from markdown.
+    func save(_ note: Note, content: String, richData: Data? = nil) {
         // Use the model's own copy for the authoritative folder path: the note
         // may have been moved by the categorization engine since the editor
         // loaded it, so the caller's `folderPath` can be stale.
@@ -321,7 +330,7 @@ final class NotesModel {
         var current = notes[index]
         current.title = Self.deriveTitle(from: content)
         current.links = resolveLinks(in: content, excluding: current.id)
-        var saved = store.saveNote(current, content: content)
+        var saved = store.saveNote(current, content: content, richData: richData)
 
         // Auto-file into a category folder based on the rules (first match wins).
         if let newFolderPath = CategoryEngine.targetFolderPath(
@@ -333,7 +342,21 @@ final class NotesModel {
         }
 
         notes[index] = saved
-        notes.sort { $0.modified > $1.modified }
+        notes.sort(by: Self.pinnedThenModified)
+    }
+
+    /// Sort order for the notes list: pinned notes first, then newest-modified.
+    static func pinnedThenModified(_ a: Note, _ b: Note) -> Bool {
+        if a.pinned != b.pinned { return a.pinned }
+        return a.modified > b.modified
+    }
+
+    /// Toggles a note's pinned state, persists it, and re-sorts the list.
+    func togglePin(_ note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        notes[index].pinned.toggle()
+        store.updateMeta(notes[index])
+        notes.sort(by: Self.pinnedThenModified)
     }
 
     /// Derives a display title from the first non-empty line of the content,

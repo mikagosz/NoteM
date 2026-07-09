@@ -18,6 +18,8 @@ struct Note: Identifiable, Equatable {
     /// Category path relative to the store root, e.g. "Projects/2026-07-08_10-00".
     var folderPath: String
     var links: [UUID]
+    /// Pinned notes are kept at the top of the list.
+    var pinned: Bool
     /// When the note was moved to the trash, or `nil` if it's active.
     var deletedAt: Date?
     /// The `folderPath` the note lived at before being trashed, so it can be
@@ -33,6 +35,7 @@ struct Note: Identifiable, Equatable {
         modified: Date = Date(),
         folderPath: String,
         links: [UUID] = [],
+        pinned: Bool = false,
         deletedAt: Date? = nil,
         originalFolderPath: String? = nil
     ) {
@@ -44,6 +47,7 @@ struct Note: Identifiable, Equatable {
         self.modified = modified
         self.folderPath = folderPath
         self.links = links
+        self.pinned = pinned
         self.deletedAt = deletedAt
         self.originalFolderPath = originalFolderPath
     }
@@ -61,6 +65,8 @@ struct NoteMeta: Codable {
     var created: Date
     var modified: Date
     var links: [UUID]
+    /// Optional so pre-pin `meta.json` files still decode (missing ⇒ not pinned).
+    var pinned: Bool?
     /// Trash bookkeeping; absent in the metadata of active notes.
     var deletedAt: Date?
     var originalFolderPath: String?
@@ -77,6 +83,7 @@ extension Note {
             created: created,
             modified: modified,
             links: links,
+            pinned: pinned,
             deletedAt: deletedAt,
             originalFolderPath: originalFolderPath
         )
@@ -94,6 +101,7 @@ extension Note {
             modified: meta.modified,
             folderPath: folderPath,
             links: meta.links,
+            pinned: meta.pinned ?? false,
             deletedAt: meta.deletedAt,
             originalFolderPath: meta.originalFolderPath
         )
