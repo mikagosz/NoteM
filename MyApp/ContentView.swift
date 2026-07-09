@@ -1,8 +1,32 @@
 import SwiftUI
 import AppKit
 
-/// Forces the enclosing `NSScrollView` to the thin overlay scroller style
-/// (thin by default, thickens on hover), regardless of the system setting.
+/// Fully invisible overlay scroller: draws nothing, so the scrollbar never shows
+/// while the content still scrolls via wheel/trackpad. Staying `NSScroller`
+/// subclass (compatible with overlay) keeps the scroll view's layout intact.
+final class ThinScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+
+    // Draw nothing — no knob, no track, no arrows.
+    override func draw(_ dirtyRect: NSRect) {}
+    override func drawKnob() {}
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+}
+
+/// Applies the thin overlay scroller to a single scroll view.
+@MainActor private func applyThinScroller(to scroll: NSScrollView) {
+    scroll.scrollerStyle = .overlay
+    scroll.autohidesScrollers = true
+    if scroll.hasVerticalScroller, !(scroll.verticalScroller is ThinScroller) {
+        scroll.verticalScroller = ThinScroller()
+    }
+    if scroll.hasHorizontalScroller, !(scroll.horizontalScroller is ThinScroller) {
+        scroll.horizontalScroller = ThinScroller()
+    }
+}
+
+/// Forces the enclosing `NSScrollView` to the thin overlay scroller, regardless
+/// of the system setting.
 private struct OverlayScrollerConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -16,8 +40,7 @@ private struct OverlayScrollerConfigurator: NSViewRepresentable {
 
     private func apply(from view: NSView) {
         guard let scroll = view.enclosingScrollView else { return }
-        scroll.scrollerStyle = .overlay
-        scroll.autohidesScrollers = true
+        applyThinScroller(to: scroll)
     }
 }
 
@@ -34,10 +57,7 @@ extension View {
 @MainActor func applyOverlayScrollersToAllWindows() {
     func walk(_ view: NSView?) {
         guard let view else { return }
-        if let scroll = view as? NSScrollView {
-            scroll.scrollerStyle = .overlay
-            scroll.autohidesScrollers = true
-        }
+        if let scroll = view as? NSScrollView { applyThinScroller(to: scroll) }
         view.subviews.forEach(walk)
     }
     for window in NSApp.windows { walk(window.contentView) }
@@ -251,6 +271,16 @@ enum NoteListFilter: Hashable {
     case smartFolder(UUID)
 }
 
+/// Tightened row insets so sidebar icons hug the left edge of the sidebar
+/// instead of using the wide default sidebar indentation.
+private let sidebarRowInsets = EdgeInsets(top: 4, leading: -10, bottom: 4, trailing: 8)
+
+/// Custom-pill rows (nav / folder / tag). Their highlight spans almost the full
+/// sidebar width with ~2pt left-right margin. The negative leading/trailing pull
+/// the pill out to the card edges; the row's own inner padding (leading 6) keeps
+/// the icons lined up with the note rows.
+private let sidebarFilterRowInsets = EdgeInsets(top: 4, leading: -16, bottom: 4, trailing: -16)
+
 struct ContentView: View {
     let settings: AppSettings
     let model: NotesModel
@@ -305,49 +335,36 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Rozwiąż konflikty z innego Maca")
+                        .listRowInsets(sidebarRowInsets)
                     }
                 }
 
                 Section {
-                    Label {
-                        Text("Start")
-                    } icon: {
-                        Image(systemName: "house")
-                            .font(.system(size: 20))
+                    SidebarNavRow(label: "Start", icon: "house", isActive: selection == .home) {
+                        selection = .home
                     }
-                    .tag(SidebarSelection.home)
+                    .listRowInsets(sidebarFilterRowInsets)
+                    // Lives inside the list's scroll view, so it re-forces the thin
+                    // overlay scroller on every render (e.g. after folder changes).
+                    .thinScrollers()
 
-                    Label {
-                        Text("Zadania")
-                    } icon: {
-                        Image(systemName: "checklist")
-                            .font(.system(size: 20))
+                    SidebarNavRow(label: "Zadania", icon: "checklist", isActive: selection == .tasks) {
+                        selection = .tasks
                     }
-                    .tag(SidebarSelection.tasks)
+                    .listRowInsets(sidebarFilterRowInsets)
                 }
 
-                // Kosz in its own section → native alignment + a gap from Zadania.
+                // Kosz in its own section → a gap from Zadania.
                 Section {
-                    HStack {
-                        Label {
-                            Text("Kosz")
-                        } icon: {
-                            Image(systemName: "trash")
-                                .font(.system(size: 20))
-                        }
-                        if !model.trashedNotes.isEmpty {
-                            Spacer()
-                            Text("\(model.trashedNotes.count)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
+                    SidebarNavRow(label: "Kosz", icon: "trash", count: model.trashedNotes.count, isActive: selection == .trash) {
+                        selection = .trash
                     }
                     .padding(.top, 10)   // vertical only — keeps left alignment intact
-                    .tag(SidebarSelection.trash)
+                    .listRowInsets(sidebarFilterRowInsets)
                 }
 
                 if !settings.allSmartFolders.isEmpty {
-                    Section("Inteligentne foldery") {
+                    Section {
                         ForEach(settings.allSmartFolders) { sf in
                             let count = model.notes.filter { sf.matches($0) }.count
                             FolderFilterRow(
@@ -359,12 +376,15 @@ struct ContentView: View {
                                 selection = nil
                                 noteFilter = (noteFilter == .smartFolder(sf.id)) ? nil : .smartFolder(sf.id)
                             }
+                            .listRowInsets(sidebarFilterRowInsets)
                         }
+                    } header: {
+                        Text("Inteligentne foldery").listRowInsets(sidebarRowInsets)
                     }
                 }
 
                 if !model.categories.isEmpty {
-                    Section("Foldery") {
+                    Section {
                         ForEach(model.categories, id: \.self) { folder in
                             let count = model.notes.filter { model.category(of: $0) == folder }.count
                             let tint = model.categoryColors[folder].flatMap { AppTheme.color(id: $0) }
@@ -379,12 +399,15 @@ struct ContentView: View {
                                 selection = nil
                                 noteFilter = (noteFilter == .folder(folder)) ? nil : .folder(folder)
                             }
+                            .listRowInsets(sidebarFilterRowInsets)
                         }
+                    } header: {
+                        Text("Foldery").listRowInsets(sidebarRowInsets)
                     }
                 }
 
                 if !model.tagCounts.isEmpty {
-                    Section("Tagi") {
+                    Section {
                         ForEach(model.tagCounts, id: \.tag) { entry in
                             TagFilterRow(
                                 tag: entry.tag,
@@ -394,24 +417,34 @@ struct ContentView: View {
                                 selection = nil
                                 noteFilter = (noteFilter == .tag(entry.tag)) ? nil : .tag(entry.tag)
                             }
+                            .listRowInsets(sidebarFilterRowInsets)
                         }
+                    } header: {
+                        Text("Tagi").listRowInsets(sidebarRowInsets)
                     }
                 }
 
                 Section {
                     ForEach(filteredNotes) { note in
-                        NoteRow(note: note, coverColor: AppTheme.color(id: model.categoryColorID(of: note)))
-                            .tag(SidebarSelection.note(note.id))
-                            .contextMenu {
-                                Button(note.pinned ? "Odepnij" : "Przypnij",
-                                       systemImage: note.pinned ? "pin.slash" : "pin") {
-                                    model.togglePin(note)
-                                }
-                                categoryColorMenu(for: note)
-                                Button("Usuń", role: .destructive) {
-                                    delete(note)
-                                }
+                        Button {
+                            selection = .note(note.id)
+                        } label: {
+                            NoteRow(note: note,
+                                    coverColor: AppTheme.color(id: model.categoryColorID(of: note)),
+                                    isSelected: selection == .note(note.id))
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(note.pinned ? "Odepnij" : "Przypnij",
+                                   systemImage: note.pinned ? "pin.slash" : "pin") {
+                                model.togglePin(note)
                             }
+                            categoryColorMenu(for: note)
+                            Button("Usuń", role: .destructive) {
+                                delete(note)
+                            }
+                        }
+                        .listRowInsets(sidebarFilterRowInsets)
                     }
                 } header: {
                     HStack {
@@ -428,6 +461,7 @@ struct ContentView: View {
                             .help("Wyczyść filtr")
                         }
                     }
+                    .listRowInsets(sidebarRowInsets)
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -453,15 +487,28 @@ struct ContentView: View {
                 QuickCaptureManager.shared.start(model: model, settings: settings)
                 SyncManager.shared.start(model: model, settings: settings)
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
-                // Thin overlay scrollers across the app; re-apply when any window
-                // (e.g. Settings) becomes key so new scroll views are covered too.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { applyOverlayScrollersToAllWindows() }
-                NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { _ in
-                    Task { @MainActor in applyOverlayScrollersToAllWindows() }
+                // Thin overlay scrollers across the app. SwiftUI Lists reset their
+                // scroller style on content/layout updates, so re-apply on several
+                // staggered passes and whenever a window becomes key or resizes.
+                for delay in [0.2, 0.6, 1.2, 2.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { applyOverlayScrollersToAllWindows() }
+                }
+                for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification] {
+                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                        Task { @MainActor in applyOverlayScrollersToAllWindows() }
+                    }
                 }
             }
             .onChange(of: settings.themeID) {
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
+            }
+            // Selecting/deselecting a folder rebuilds the notes list, which resets
+            // its scroller back to the (thick) system style — re-thin it right after.
+            .onChange(of: noteFilter) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
+            }
+            .onChange(of: selection) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
             }
             .sheet(isPresented: $showConflicts) {
                 ConflictResolverView(model: model) { showConflicts = false }
@@ -482,6 +529,7 @@ struct ContentView: View {
                     Button(action: addNote) {
                         Label("Nowa notatka", systemImage: "square.and.pencil")
                             .foregroundStyle(settings.theme.accent)
+                            .padding(.horizontal, 8)   // widens the toolbar button's capsule
                     }
                     .labelStyle(.titleAndIcon)
                     .help("Nowa notatka")
@@ -562,10 +610,12 @@ struct ContentView: View {
     }
 }
 
-/// Sidebar row: note title + last-modified date.
+/// Sidebar row: note title + last-modified date. When selected it shows the same
+/// full-width blue highlight pill as the folder/tag/nav rows.
 struct NoteRow: View {
     let note: Note
     var coverColor: Color? = nil
+    var isSelected: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -580,16 +630,25 @@ struct NoteRow: View {
                     .lineLimit(1)
                 Text(note.modified.noteMDisplay)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.white.opacity(0.9)) : AnyShapeStyle(.secondary))
             }
             if note.pinned {
                 Spacer()
                 Image(systemName: "pin.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
             }
         }
-        .padding(.vertical, 2)
+        .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+        .padding(.leading, 6)
+        .padding(.trailing, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
+        )
+        .contentShape(Rectangle())
     }
 }
 
@@ -659,8 +718,10 @@ struct FolderFilterRow: View {
                     .monospacedDigit()
             }
             .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .padding(.horizontal, 8)
+            .padding(.leading, 6)
+            .padding(.trailing, 8)
             .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
@@ -710,8 +771,52 @@ struct TagFilterRow: View {
                     .monospacedDigit()
             }
             .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .padding(.horizontal, 8)
+            .padding(.leading, 6)
+            .padding(.trailing, 8)
             .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Sidebar navigation row (Start / Zadania / Kosz). Uses its own highlight pill
+/// — like the folder/tag rows — instead of the native sidebar selection capsule,
+/// so it can hug the left edge without the highlight looking off.
+struct SidebarNavRow: View {
+    let label: String
+    let icon: String
+    var count: Int? = nil
+    let isActive: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack {
+                Label {
+                    Text(label)
+                } icon: {
+                    Image(systemName: icon)
+                        .font(.system(size: 20))
+                        .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                }
+                Spacer()
+                if let count, count > 0 {
+                    Text("\(count)")
+                        .foregroundStyle(isActive ? AnyShapeStyle(.white.opacity(0.9)) : AnyShapeStyle(.secondary))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .padding(.leading, 6)
+            .padding(.trailing, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
