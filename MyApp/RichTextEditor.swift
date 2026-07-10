@@ -571,8 +571,8 @@ final class NoteTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         // Dragging a handle of the already-selected image resizes it.
         if beginImageResizeIfHandleClicked(event) { return }
-        // Clicking an image selects it (shows the Word-style handles).
-        if selectImageIfClicked(event) { return }
+        // Pressing an image selects it and lets the user drag it to a new spot.
+        if beginImageSelectOrMove(event) { return }
         // Any other click clears the image selection.
         if selectedImageRange != nil { selectedImageRange = nil; needsDisplay = true }
         if toggleChecklistIfCheckboxClicked(event) { return }
@@ -610,6 +610,10 @@ final class NoteTextView: NSTextView {
     /// resize shape over a selected image's handles.
     private var handleTrackingArea: NSTrackingArea?
 
+    /// While dragging an image to a new spot in the text, the character index
+    /// where it would be dropped — drawn as an insertion caret. `nil` otherwise.
+    private var moveDropIndex: Int?
+
     /// The image backing an attachment, whether it stores it directly (dropped /
     /// pasted images) or via an `NSTextAttachmentCell` (markdown `![](…)` images).
     static func image(of attachment: NSTextAttachment) -> NSImage? {
@@ -638,14 +642,72 @@ final class NoteTextView: NSTextView {
         return (range, attachment, image)
     }
 
-    /// Selects the image under the click (showing its handles) instead of moving
-    /// the caret. Returns `true` when an image was hit.
-    private func selectImageIfClicked(_ event: NSEvent) -> Bool {
-        let point = convert(event.locationInWindow, from: nil)
-        guard let hit = imageAttachment(at: point) else { return false }
+    /// Presses on an image select it (showing its handles); dragging past a small
+    /// threshold then moves it to a new position in the text, dropping it where an
+    /// insertion caret indicates. Returns `true` when an image was hit.
+    private func beginImageSelectOrMove(_ event: NSEvent) -> Bool {
+        let startPoint = convert(event.locationInWindow, from: nil)
+        guard let hit = imageAttachment(at: startPoint) else { return false }
         selectedImageRange = hit.range
         needsDisplay = true
+
+        let srcIndex = hit.range.location
+        var moving = false
+
+        while let e = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if e.type == .leftMouseUp { break }
+            let p = convert(e.locationInWindow, from: nil)
+            if !moving, hypot(p.x - startPoint.x, p.y - startPoint.y) > 4 {
+                moving = true
+                NSCursor.closedHand.set()
+            }
+            if moving {
+                moveDropIndex = characterIndexForInsertion(at: p)
+                needsDisplay = true
+                displayIfNeeded()
+            }
+        }
+
+        // Perform the move on release (skip if it wasn't really a drag or the drop
+        // lands on the image's own spot).
+        if moving, let rawDrop = moveDropIndex,
+           rawDrop != srcIndex, rawDrop != srcIndex + 1 {
+            // Convert the drop caret (original-text coords) to a post-removal
+            // insertion index, then move via the undo-registering path.
+            let dest = rawDrop > srcIndex ? rawDrop - 1 : rawDrop
+            performImageMove(from: srcIndex, to: dest)
+        }
+
+        moveDropIndex = nil
+        NSCursor.arrow.set()
+        needsDisplay = true
         return true
+    }
+
+    /// Moves the single image at character index `src` so it ends up at index
+    /// `dest` (expressed in the text *after* the source character is removed),
+    /// and registers the inverse move on the undo manager. Because removing the
+    /// inserted character exactly reverses the insert, the inverse is simply
+    /// "move it back to `src`", which keeps undo/redo symmetric.
+    private func performImageMove(from src: Int, to dest: Int) {
+        guard let storage = textStorage, src >= 0, src < storage.length else { return }
+        // Snapshot the attachment (with its size attributes) so it re-inserts intact.
+        let piece = storage.attributedSubstring(from: NSRange(location: src, length: 1))
+        storage.beginEditing()
+        storage.replaceCharacters(in: NSRange(location: src, length: 1), with: "")
+        let insertAt = min(max(dest, 0), storage.length)
+        storage.insert(piece, at: insertAt)
+        storage.endEditing()
+        selectedImageRange = NSRange(location: insertAt, length: 1)
+        typingAttributes = MarkdownStyler.defaultTypingAttributes
+
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.performImageMove(from: insertAt, to: src)
+        }
+        undoManager?.setActionName("Przeniesienie obrazka")
+
+        controller?.onChange?(attributedString())
+        needsDisplay = true
     }
 
     /// If the click starts on one of the selected image's eight handles, run a
@@ -661,6 +723,11 @@ final class NoteTextView: NSTextView {
         let point = convert(event.locationInWindow, from: nil)
         let rect = imageRect(forCharacterRange: charRange)
         guard let handle = handleHit(at: point, in: rect) else { return false }
+
+        // Snapshot the pre-drag size so the resize can be reversed by undo/redo.
+        // `rect.size` is the size currently on screen (cell-based markdown images
+        // report a zero `bounds`, so use the displayed rect instead).
+        let originalBounds = CGRect(origin: .zero, size: rect.size)
 
         // Markdown (cell-based) images ignore `bounds`; promote to a plain image
         // attachment so its size becomes adjustable.
@@ -696,12 +763,58 @@ final class NoteTextView: NSTextView {
             if drag.type == .leftMouseUp { break }
         }
 
-        // Persist the chosen size and mark the note dirty so it autosaves.
-        storage.addAttribute(.noteMImageWidth, value: size.width, range: charRange)
-        storage.addAttribute(.noteMImageHeight, value: size.height, range: charRange)
-        controller?.onChange?(attributedString())
+        // Restore the pre-drag size, then re-apply the final size through the
+        // undo-registering path so ⌘Z / the toolbar arrows reverse the resize.
+        // Skip when the click didn't actually change the size (no drag).
+        if size != originalBounds.size {
+            attachment.bounds = originalBounds
+            applyImageSize(range: charRange,
+                           bounds: CGRect(origin: .zero, size: size),
+                           width: size.width, height: size.height)
+        }
         needsDisplay = true
         return true
+    }
+
+    /// Sets the display size of the image at `range` (both the live attachment
+    /// `bounds` and the persisted width/height attributes) and registers the
+    /// inverse on the undo manager, so ⌘Z and the toolbar arrows reverse an
+    /// image resize.
+    private func applyImageSize(range: NSRange, bounds: CGRect, width: CGFloat?, height: CGFloat?) {
+        guard let storage = textStorage, range.location < storage.length,
+              let attachment = storage.attribute(.attachment, at: range.location, effectiveRange: nil) as? NSTextAttachment
+        else { return }
+
+        // Snapshot the current size for the inverse (undo / redo) action.
+        let prevBounds = attachment.bounds
+        let prevWidth = storage.attribute(.noteMImageWidth, at: range.location, effectiveRange: nil) as? CGFloat
+        let prevHeight = storage.attribute(.noteMImageHeight, at: range.location, effectiveRange: nil) as? CGFloat
+
+        // A cell-based markdown image ignores `bounds`; promote it to a plain
+        // image so the size takes effect.
+        if attachment.image == nil, let image = Self.image(of: attachment) {
+            attachment.image = image
+            attachment.attachmentCell = nil
+        }
+
+        attachment.bounds = bounds
+        storage.beginEditing()
+        if let width { storage.addAttribute(.noteMImageWidth, value: width, range: range) }
+        else { storage.removeAttribute(.noteMImageWidth, range: range) }
+        if let height { storage.addAttribute(.noteMImageHeight, value: height, range: range) }
+        else { storage.removeAttribute(.noteMImageHeight, range: range) }
+        storage.endEditing()
+
+        layoutManager?.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+        layoutManager?.invalidateDisplay(forCharacterRange: range)
+
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.applyImageSize(range: range, bounds: prevBounds, width: prevWidth, height: prevHeight)
+        }
+        undoManager?.setActionName("Zmiana rozmiaru obrazka")
+
+        controller?.onChange?(attributedString())
+        needsDisplay = true
     }
 
     /// Which handle (if any) sits under `point`, given the image's view rect.
@@ -765,10 +878,18 @@ final class NoteTextView: NSTextView {
         guard let storage = textStorage,
               let charRange = selectedImageRange,
               charRange.location < storage.length,
-              storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) is NSTextAttachment,
-              let handle = handleHit(at: point, in: imageRect(forCharacterRange: charRange)) else { return false }
-        cursor(for: handle).set()
-        return true
+              storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) is NSTextAttachment else { return false }
+        let rect = imageRect(forCharacterRange: charRange)
+        if let handle = handleHit(at: point, in: rect) {
+            cursor(for: handle).set()
+            return true
+        }
+        // Over the image body: an open hand hints it can be grabbed and moved.
+        if rect.contains(point) {
+            NSCursor.openHand.set()
+            return true
+        }
+        return false
     }
 
     private func cursor(for handle: ResizeHandle) -> NSCursor {
@@ -833,6 +954,24 @@ final class NoteTextView: NSTextView {
             path.lineWidth = 1.5
             path.stroke()
         }
+
+        // Drop-location caret while dragging the image to a new spot.
+        if let dropIndex = moveDropIndex {
+            let caret = insertionCaretRect(at: dropIndex)
+            if caret.height > 1 {
+                NSColor.controlAccentColor.setFill()
+                NSRect(x: caret.minX, y: caret.minY, width: 2, height: caret.height).fill()
+            }
+        }
+    }
+
+    /// View-space caret rectangle for an insertion point at `charIndex`.
+    private func insertionCaretRect(at charIndex: Int) -> NSRect {
+        let clamped = min(max(charIndex, 0), textStorage?.length ?? 0)
+        let screenRect = firstRect(forCharacterRange: NSRange(location: clamped, length: 0), actualRange: nil)
+        guard let window, screenRect.height > 0 else { return .zero }
+        let windowRect = window.convertFromScreen(screenRect)
+        return convert(windowRect, from: nil)
     }
 
     // MARK: - Wiki links
