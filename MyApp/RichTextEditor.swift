@@ -400,7 +400,8 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     // MARK: - Table
 
     func insertTable() {
-        let template = "| Kolumna 1 | Kolumna 2 | Kolumna 3 |\n|-----------|-----------|----------|\n|           |           |          |"
+        let template = Loc.t("| Kolumna 1 | Kolumna 2 | Kolumna 3 |", "| Column 1 | Column 2 | Column 3 |")
+            + "\n|-----------|-----------|----------|\n|           |           |          |"
         let attrs = MarkdownStyler.defaultTypingAttributes
         let str = NSAttributedString(string: template, attributes: attrs)
         guard let textView else { return }
@@ -534,7 +535,8 @@ final class NoteTextView: NSTextView {
     /// items to Polish; actions and key equivalents are left untouched.
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let menu = super.menu(for: event) else { return nil }
-        Self.localizeToPolish(menu)
+        // The system menu is already English; only rewrite it to Polish in PL mode.
+        if Loc.language == .pl { Self.localizeToPolish(menu) }
         return menu
     }
 
@@ -767,7 +769,7 @@ final class NoteTextView: NSTextView {
         undoManager?.registerUndo(withTarget: self) { target in
             target.performImageMove(from: insertAt, to: src)
         }
-        undoManager?.setActionName("Przeniesienie obrazka")
+        undoManager?.setActionName(Loc.t("Przeniesienie obrazka", "Move image"))
 
         controller?.onChange?(attributedString())
         needsDisplay = true
@@ -874,7 +876,7 @@ final class NoteTextView: NSTextView {
         undoManager?.registerUndo(withTarget: self) { target in
             target.applyImageSize(range: range, bounds: prevBounds, width: prevWidth, height: prevHeight)
         }
-        undoManager?.setActionName("Zmiana rozmiaru obrazka")
+        undoManager?.setActionName(Loc.t("Zmiana rozmiaru obrazka", "Resize image"))
 
         controller?.onChange?(attributedString())
         needsDisplay = true
@@ -1462,6 +1464,7 @@ struct RichTextEditor: NSViewRepresentable {
     // Settings updates the editor live — in both the main note and quick capture.
     @AppStorage(AppSettings.spellCheckKey) private var spellCheckEnabled = true
     @AppStorage(AppSettings.autocorrectKey) private var autocorrectEnabled = false
+    @AppStorage(Loc.key) private var languageRaw = AppLanguage.pl.rawValue
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -1518,11 +1521,12 @@ struct RichTextEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = spellCheckEnabled && autocorrectEnabled
         textView.isGrammarCheckingEnabled = false
         guard spellCheckEnabled else { return }
-        // Force the Polish dictionary if it's installed on this Mac.
+        // Force the dictionary matching the app language, if installed.
+        let prefix = (AppLanguage(rawValue: languageRaw) ?? .pl).spellPrefix
         let checker = NSSpellChecker.shared
-        if let polish = checker.availableLanguages.first(where: { $0.lowercased().hasPrefix("pl") }) {
+        if let match = checker.availableLanguages.first(where: { $0.lowercased().hasPrefix(prefix) }) {
             checker.automaticallyIdentifiesLanguages = false
-            checker.setLanguage(polish)
+            checker.setLanguage(match)
         }
     }
 

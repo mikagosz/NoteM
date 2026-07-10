@@ -165,7 +165,7 @@ final class NotesModel {
     /// Creates a new empty note and inserts it at the top of the list.
     @discardableResult
     func createNote() -> Note {
-        let note = store.createNote(title: "Nowa notatka")
+        let note = store.createNote(title: Loc.t("Nowa notatka", "New note"))
         notes.insert(note, at: 0)
         return note
     }
@@ -494,6 +494,6 @@ final class NotesModel {
         }
 
         line = line.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
-        return line.isEmpty ? "Nowa notatka" : String(line.prefix(60))
+        return line.isEmpty ? Loc.t("Nowa notatka", "New note") : String(line.prefix(60))
     }
 }

@@ -13,11 +13,11 @@ struct AttachmentRef: Identifiable, Hashable {
         case link    // an http/https/mailto link written in the note
 
         /// Section title for the grouped "Załączniki" view.
-        var sectionTitle: String {
+        func sectionTitle(_ s: AppSettings) -> String {
             switch self {
-            case .image: return "Zdjęcia"
-            case .file:  return "Załączniki"
-            case .link:  return "Linki"
+            case .image: return s.t("Zdjęcia", "Images")
+            case .file:  return s.t("Załączniki", "Files")
+            case .link:  return s.t("Linki", "Links")
             }
         }
 

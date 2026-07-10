@@ -97,9 +97,9 @@ struct FormatBar: View {
                 HStack(spacing: 0) {
                     // Text style
                     group {
-                        fmtBtn("bold",   label: "Pogrubienie",  action: controller.toggleBold)
-                        fmtBtn("italic", label: "Kursywa",      action: controller.toggleItalic)
-                        fmtBtn("underline", label: "Podkreślenie", action: { controller.toggleUnderline() })
+                        fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"),  action: controller.toggleBold)
+                        fmtBtn("italic", label: Loc.t("Kursywa", "Italic"),      action: controller.toggleItalic)
+                        fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), action: { controller.toggleUnderline() })
                     }
                     divider()
                     // Headers
@@ -111,16 +111,16 @@ struct FormatBar: View {
                     divider()
                     // Lists
                     group {
-                        fmtBtn("list.bullet",  label: "Lista punktowana", action: { controller.toggleList("bullet") })
-                        fmtBtn("list.number",  label: "Lista numerowana", action: { controller.toggleList("ordered") })
-                        fmtBtn("checklist",    label: "Checklist",        action: controller.toggleChecklist)
+                        fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), action: { controller.toggleList("bullet") })
+                        fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), action: { controller.toggleList("ordered") })
+                        fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"),        action: controller.toggleChecklist)
                     }
                     divider()
                     // Insert
                     group {
-                        fmtBtn("tablecells",                             label: "Tabela",    action: controller.insertTable)
-                        fmtBtn("chevron.left.forwardslash.chevron.right", label: "Kod",      action: controller.insertInlineCode)
-                        fmtBtn("link",                                   label: "Link",      action: { controller.insertLink() })
+                        fmtBtn("tablecells",                             label: Loc.t("Tabela", "Table"),    action: controller.insertTable)
+                        fmtBtn("chevron.left.forwardslash.chevron.right", label: Loc.t("Kod", "Code"),      action: controller.insertInlineCode)
+                        fmtBtn("link",                                   label: Loc.t("Link", "Link"),      action: { controller.insertLink() })
                     }
                 }
                 .padding(.horizontal, 8)

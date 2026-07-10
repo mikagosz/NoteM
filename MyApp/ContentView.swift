@@ -128,13 +128,23 @@ extension View {
 }
 
 extension Date {
-    /// App-wide display format for note dates, e.g. "09.07.26r. - 09:17".
-    var noteMDisplay: String { Self.noteMFormatter.string(from: self) }
+    /// App-wide display format for note dates, e.g. "09.07.26r. - 09:17" (PL) or
+    /// "09.07.26 - 09:17" (EN). Follows the app language.
+    var noteMDisplay: String {
+        (Loc.language == .pl ? Self.plFormatter : Self.enFormatter).string(from: self)
+    }
 
-    private static let noteMFormatter: DateFormatter = {
+    private static let plFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "pl_PL")
         formatter.dateFormat = "dd.MM.yy'r.' - HH:mm"
+        return formatter
+    }()
+
+    private static let enFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.dateFormat = "dd.MM.yy - HH:mm"
         return formatter
     }()
 }
@@ -166,7 +176,7 @@ struct SettingsView: View {
             List(selection: $pane) {
                 ForEach(SettingsPane.allCases, id: \.self) { p in
                     Label {
-                        Text(p.title)
+                        Text(p.title(settings))
                     } icon: {
                         Image(systemName: p.icon)
                             .foregroundStyle(settings.theme.accent)
@@ -203,15 +213,15 @@ struct SettingsView: View {
 private enum SettingsPane: String, Hashable, CaseIterable {
     case general, appearance, categorization, smartFolders, quickCapture, sync, trash
 
-    var title: String {
+    func title(_ s: AppSettings) -> String {
         switch self {
-        case .general:        return "Ogólne"
-        case .appearance:     return "Wygląd"
-        case .categorization: return "Katalogowanie"
-        case .smartFolders:   return "Inteligentne foldery"
+        case .general:        return s.t("Ogólne", "General")
+        case .appearance:     return s.t("Wygląd", "Appearance")
+        case .categorization: return s.t("Katalogowanie", "Filing")
+        case .smartFolders:   return s.t("Inteligentne foldery", "Smart folders")
         case .quickCapture:   return "Quick Capture"
-        case .sync:           return "Synchronizacja"
-        case .trash:          return "Kosz"
+        case .sync:           return s.t("Synchronizacja", "Sync")
+        case .trash:          return s.t("Kosz", "Trash")
         }
     }
 
@@ -244,46 +254,64 @@ private struct GeneralSettingsView: View {
         var id: String { name }
     }
 
-    private let groups: [Group] = [
-        Group(name: "Formatowanie", shortcuts: [
-            Shortcut(keys: "⌘B", title: "Pogrubienie"),
-            Shortcut(keys: "⌘I", title: "Kursywa"),
-            Shortcut(keys: "⌘1", title: "Nagłówek 1"),
-            Shortcut(keys: "⌘2", title: "Nagłówek 2"),
-            Shortcut(keys: "⌘3", title: "Nagłówek 3"),
-            Shortcut(keys: "⌘⇧L", title: "Lista zadań (checklista)")
-        ]),
-        Group(name: "Notatka", shortcuts: [
-            Shortcut(keys: "⌘F", title: "Szukaj w notatce"),
-            Shortcut(keys: "⌘Z", title: "Cofnij"),
-            Shortcut(keys: "⌘⇧Z", title: "Ponów"),
-            Shortcut(keys: "⌘C", title: "Kopiuj (także zaznaczoną grafikę)"),
-            Shortcut(keys: "⌘X", title: "Wytnij (także zaznaczoną grafikę)"),
-            Shortcut(keys: "⌘V", title: "Wklej")
-        ]),
-        Group(name: "Grafika", shortcuts: [
-            Shortcut(keys: "⌘O", title: "Dopasuj zaznaczoną grafikę do szerokości okna")
-        ])
-    ]
+    private var groups: [Group] {
+        [
+            Group(name: settings.t("Formatowanie", "Formatting"), shortcuts: [
+                Shortcut(keys: "⌘B", title: settings.t("Pogrubienie", "Bold")),
+                Shortcut(keys: "⌘I", title: settings.t("Kursywa", "Italic")),
+                Shortcut(keys: "⌘1", title: settings.t("Nagłówek 1", "Heading 1")),
+                Shortcut(keys: "⌘2", title: settings.t("Nagłówek 2", "Heading 2")),
+                Shortcut(keys: "⌘3", title: settings.t("Nagłówek 3", "Heading 3")),
+                Shortcut(keys: "⌘⇧L", title: settings.t("Lista zadań (checklista)", "Checklist"))
+            ]),
+            Group(name: settings.t("Notatka", "Note"), shortcuts: [
+                Shortcut(keys: "⌘F", title: settings.t("Szukaj w notatce", "Find in note")),
+                Shortcut(keys: "⌘Z", title: settings.t("Cofnij", "Undo")),
+                Shortcut(keys: "⌘⇧Z", title: settings.t("Ponów", "Redo")),
+                Shortcut(keys: "⌘C", title: settings.t("Kopiuj (także zaznaczoną grafikę)", "Copy (incl. selected image)")),
+                Shortcut(keys: "⌘X", title: settings.t("Wytnij (także zaznaczoną grafikę)", "Cut (incl. selected image)")),
+                Shortcut(keys: "⌘V", title: settings.t("Wklej", "Paste"))
+            ]),
+            Group(name: settings.t("Grafika", "Image"), shortcuts: [
+                Shortcut(keys: "⌘O", title: settings.t("Dopasuj zaznaczoną grafikę do szerokości okna",
+                                                       "Fit selected image to window width"))
+            ])
+        ]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Pisownia")
+            Text(settings.t("Język", "Language"))
                 .font(.headline)
-            Toggle("Sprawdzanie pisowni (słownik polski — podkreśla błędy)",
+            Picker(settings.t("Język interfejsu", "Interface language"), selection: $settings.language) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 320, alignment: .leading)
+
+            Divider().padding(.vertical, 4)
+
+            Text(settings.t("Pisownia", "Spelling"))
+                .font(.headline)
+            Toggle(settings.t("Sprawdzanie pisowni (podkreśla błędy)", "Check spelling (underline mistakes)"),
                    isOn: $settings.spellCheckEnabled)
-            Toggle("Automatyczna korekta (poprawia błędy podczas pisania)",
+            Toggle(settings.t("Automatyczna korekta (poprawia błędy podczas pisania)",
+                              "Auto-correct (fix mistakes while typing)"),
                    isOn: $settings.autocorrectEnabled)
                 .disabled(!settings.spellCheckEnabled)
-            Text("Działa w notatniku i w szybkiej notatce.")
+            Text(settings.t("Słownik zależy od wybranego języka. Działa w notatniku i w szybkiej notatce.",
+                           "The dictionary follows the selected language. Works in the note editor and quick capture."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Divider().padding(.vertical, 4)
 
-            Text("Skróty klawiszowe")
+            Text(settings.t("Skróty klawiszowe", "Keyboard shortcuts"))
                 .font(.headline)
-            Text("Skróty działają w edytorze notatki oraz w szybkiej notatce.")
+            Text(settings.t("Skróty działają w edytorze notatki oraz w szybkiej notatce.",
+                           "Shortcuts work in the note editor and quick capture."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -320,24 +348,26 @@ private struct SmartFoldersSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Inteligentne foldery")
+            Text(settings.t("Inteligentne foldery", "Smart folders"))
                 .font(.headline)
-            Text("Inteligentne foldery to zapisane wyszukiwania, które automatycznie zbierają pasujące notatki. "
-                 + "Dwa wbudowane foldery (Dzisiejsze, Przypięte) są zawsze dostępne.")
+            Text(settings.t("Inteligentne foldery to zapisane wyszukiwania, które automatycznie zbierają pasujące notatki. "
+                            + "Dwa wbudowane foldery (Dzisiejsze, Przypięte) są zawsze dostępne.",
+                            "Smart folders are saved searches that automatically collect matching notes. "
+                            + "Two built-in folders (Today, Pinned) are always available."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             List {
-                Section("Wbudowane") {
+                Section(settings.t("Wbudowane", "Built-in")) {
                     ForEach(SmartFolder.predefined) { sf in
-                        Label(sf.name, systemImage: sf.icon)
+                        Label(sf.displayName(settings), systemImage: sf.icon)
                             .foregroundStyle(.secondary)
                     }
                 }
                 if !settings.smartFolders.isEmpty {
-                    Section("Własne") {
+                    Section(settings.t("Własne", "Custom")) {
                         ForEach(settings.smartFolders) { sf in
-                            Label(sf.name, systemImage: sf.icon)
+                            Label(sf.displayName(settings), systemImage: sf.icon)
                         }
                         .onDelete { settings.smartFolders.remove(atOffsets: $0) }
                     }
@@ -348,14 +378,14 @@ private struct SmartFoldersSettingsView: View {
             if showAdd {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
-                        TextField("Nazwa folderu", text: $newName)
+                        TextField(settings.t("Nazwa folderu", "Folder name"), text: $newName)
                             .textFieldStyle(.roundedBorder)
-                        TextField("Tag (np. projekt)", text: $newTag)
+                        TextField(settings.t("Tag (np. projekt)", "Tag (e.g. project)"), text: $newTag)
                             .textFieldStyle(.roundedBorder)
                         HStack {
-                            Button("Anuluj") { showAdd = false; newName = ""; newTag = "" }
+                            Button(settings.t("Anuluj", "Cancel")) { showAdd = false; newName = ""; newTag = "" }
                             Spacer()
-                            Button("Dodaj") { commitAdd() }
+                            Button(settings.t("Dodaj", "Add")) { commitAdd() }
                                 .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
                                           || newTag.trimmingCharacters(in: .whitespaces).isEmpty)
                                 .buttonStyle(.borderedProminent)
@@ -364,7 +394,7 @@ private struct SmartFoldersSettingsView: View {
                 }
             } else {
                 Button { showAdd = true } label: {
-                    Label("Dodaj folder (tag contains)", systemImage: "plus")
+                    Label(settings.t("Dodaj folder (tag contains)", "Add folder (tag contains)"), systemImage: "plus")
                 }
             }
 
@@ -453,7 +483,7 @@ struct ContentView: View {
         case .none: return nil
         case .tag(let t): return "#\(t)"
         case .folder(let f): return f
-        case .smartFolder(let id): return settings.allSmartFolders.first(where: { $0.id == id })?.name
+        case .smartFolder(let id): return settings.allSmartFolders.first(where: { $0.id == id })?.displayName(settings)
         }
     }
 
@@ -465,17 +495,19 @@ struct ContentView: View {
                         Button {
                             showConflicts = true
                         } label: {
-                            Label("Konflikty synchronizacji: \(model.conflicts.count)", systemImage: "exclamationmark.triangle.fill")
+                            Label(settings.t("Konflikty synchronizacji: \(model.conflicts.count)",
+                                             "Sync conflicts: \(model.conflicts.count)"),
+                                  systemImage: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
                         }
                         .buttonStyle(.plain)
-                        .help("Rozwiąż konflikty z innego Maca")
+                        .help(settings.t("Rozwiąż konflikty z innego Maca", "Resolve conflicts from another Mac"))
                         .listRowInsets(sidebarRowInsets)
                     }
                 }
 
                 Section {
-                    SidebarNavRow(label: "Start", icon: "house", isActive: selection == .home) {
+                    SidebarNavRow(label: settings.t("Start", "Start"), icon: "house", isActive: selection == .home) {
                         selection = .home
                     }
                     .listRowInsets(sidebarFilterRowInsets)
@@ -483,20 +515,20 @@ struct ContentView: View {
                     // overlay scroller on every render (e.g. after folder changes).
                     .thinScrollers()
 
-                    SidebarNavRow(label: "Zadania", icon: "checklist", count: model.activeTaskCount, isActive: selection == .tasks) {
+                    SidebarNavRow(label: settings.t("Zadania", "Tasks"), icon: "checklist", count: model.activeTaskCount, isActive: selection == .tasks) {
                         selection = .tasks
                     }
                     .listRowInsets(sidebarFilterRowInsets)
 
-                    SidebarNavRow(label: "Załączniki", icon: "paperclip", count: model.attachments.count, isActive: selection == .attachments) {
+                    SidebarNavRow(label: settings.t("Załączniki", "Attachments"), icon: "paperclip", count: model.attachments.count, isActive: selection == .attachments) {
                         selection = .attachments
                     }
                     .listRowInsets(sidebarFilterRowInsets)
                 }
 
-                // Kosz in its own section → a gap from Zadania.
+                // Trash in its own section → a gap from Tasks.
                 Section {
-                    SidebarNavRow(label: "Kosz", icon: "trash", count: model.trashedNotes.count, isActive: selection == .trash) {
+                    SidebarNavRow(label: settings.t("Kosz", "Trash"), icon: "trash", count: model.trashedNotes.count, isActive: selection == .trash) {
                         selection = .trash
                     }
                     .padding(.top, 10)   // vertical only — keeps left alignment intact
@@ -508,7 +540,7 @@ struct ContentView: View {
                         ForEach(settings.allSmartFolders) { sf in
                             let count = model.notes.filter { sf.matches($0) }.count
                             FolderFilterRow(
-                                label: sf.name,
+                                label: sf.displayName(settings),
                                 icon: sf.icon,
                                 count: count,
                                 isActive: noteFilter == .smartFolder(sf.id)
@@ -519,7 +551,7 @@ struct ContentView: View {
                             .listRowInsets(sidebarFilterRowInsets)
                         }
                     } header: {
-                        Text("Inteligentne foldery").listRowInsets(sidebarRowInsets)
+                        Text(settings.t("Inteligentne foldery", "Smart folders")).listRowInsets(sidebarRowInsets)
                     }
                 }
 
@@ -542,7 +574,7 @@ struct ContentView: View {
                             .listRowInsets(sidebarFilterRowInsets)
                         }
                     } header: {
-                        Text("Foldery").listRowInsets(sidebarRowInsets)
+                        Text(settings.t("Foldery", "Folders")).listRowInsets(sidebarRowInsets)
                     }
                 }
 
@@ -560,7 +592,7 @@ struct ContentView: View {
                             .listRowInsets(sidebarFilterRowInsets)
                         }
                     } header: {
-                        Text("Tagi").listRowInsets(sidebarRowInsets)
+                        Text(settings.t("Tagi", "Tags")).listRowInsets(sidebarRowInsets)
                     }
                 }
 
@@ -589,7 +621,7 @@ struct ContentView: View {
                     }
                 } header: {
                     HStack {
-                        Text("Notatki")
+                        Text(settings.t("Notatki", "Notes"))
                         if let label = activeFilterLabel {
                             Spacer()
                             Button {
@@ -599,7 +631,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.plain)
                             .font(.caption)
-                            .help("Wyczyść filtr")
+                            .help(settings.t("Wyczyść filtr", "Clear filter"))
                         }
                     }
                     .listRowInsets(sidebarRowInsets)
@@ -677,52 +709,53 @@ struct ContentView: View {
                 // Compose button sits near the NoteM title, above the sidebar.
                 ToolbarItem(placement: .navigation) {
                     Button(action: addNote) {
-                        Label("Nowa notatka", systemImage: "square.and.pencil")
+                        Label(settings.t("Nowa notatka", "New note"), systemImage: "square.and.pencil")
                             .foregroundStyle(settings.theme.accent)
                             .padding(.horizontal, 8)   // widens the toolbar button's capsule
                     }
                     .labelStyle(.titleAndIcon)
-                    .help("Nowa notatka")
+                    .help(settings.t("Nowa notatka", "New note"))
                 }
             }
         } detail: {
             Group {
             switch selection {
             case .home:
-                StartView(model: model, accent: settings.theme.accent, layout: settings.startLayout) { noteID in
+                StartView(model: model, settings: settings, accent: settings.theme.accent, layout: settings.startLayout) { noteID in
                     selection = .note(noteID)
                 }
             case .tasks:
-                TasksView(model: model) { noteID in
+                TasksView(model: model, settings: settings) { noteID in
                     selection = .note(noteID)
                 }
             case .attachments:
-                AttachmentsView(model: model) { noteID in
+                AttachmentsView(model: model, settings: settings) { noteID in
                     selection = .note(noteID)
                 }
             case .trash:
-                TrashView(model: model)
+                TrashView(model: model, settings: settings)
             case .note(let id):
                 if let note = model.notes.first(where: { $0.id == id }) {
-                    NoteDetailView(note: note, model: model, accent: settings.theme.accent) { targetID in
+                    NoteDetailView(note: note, model: model, settings: settings, accent: settings.theme.accent) { targetID in
                         selection = .note(targetID)
                     }
                     .id(note.id)
                 } else {
-                    ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
+                    ContentUnavailableView(settings.t("Wybierz notatkę", "Select a note"), systemImage: "note.text")
                 }
             case .none:
                 if noteFilter != nil {
                     FilteredNotesView(
-                        title: activeFilterLabel ?? "Notatki",
+                        title: activeFilterLabel ?? settings.t("Notatki", "Notes"),
                         notes: filteredNotes,
                         model: model,
+                        settings: settings,
                         accent: settings.theme.accent
                     ) { id in
                         selection = .note(id)
                     }
                 } else {
-                    ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
+                    ContentUnavailableView(settings.t("Wybierz notatkę", "Select a note"), systemImage: "note.text")
                 }
             }
             }
@@ -735,7 +768,7 @@ struct ContentView: View {
                             Image(systemName: "gear")
                                 .foregroundStyle(settings.theme.accent)
                         }
-                        .help("Ustawienia")
+                        .help(settings.t("Ustawienia", "Settings"))
                     }
                 }
             }
@@ -805,6 +838,7 @@ struct FilteredNotesView: View {
     let title: String
     let notes: [Note]
     let model: NotesModel
+    let settings: AppSettings
     var accent: Color = .accentColor
     let openNote: (UUID) -> Void
 
@@ -814,9 +848,9 @@ struct FilteredNotesView: View {
         Group {
             if notes.isEmpty {
                 ContentUnavailableView(
-                    "Brak notatek",
+                    settings.t("Brak notatek", "No notes"),
                     systemImage: "folder",
-                    description: Text("Nie ma tu jeszcze żadnych notatek.")
+                    description: Text(settings.t("Nie ma tu jeszcze żadnych notatek.", "There are no notes here yet."))
                 )
             } else {
                 ScrollView {
@@ -824,6 +858,7 @@ struct FilteredNotesView: View {
                         ForEach(notes) { note in
                             NoteCard(
                                 note: note,
+                                settings: settings,
                                 accent: accent,
                                 coverColor: AppTheme.color(id: model.categoryColorID(of: note))
                             )
@@ -843,14 +878,16 @@ struct FilteredNotesView: View {
 /// Trash view: deleted notes with restore / permanent-delete actions.
 struct TrashView: View {
     let model: NotesModel
+    let settings: AppSettings
 
     var body: some View {
         Group {
             if model.trashedNotes.isEmpty {
                 ContentUnavailableView(
-                    "Kosz jest pusty",
+                    settings.t("Kosz jest pusty", "Trash is empty"),
                     systemImage: "trash",
-                    description: Text("Usunięte notatki trafiają tutaj i można je przywrócić.")
+                    description: Text(settings.t("Usunięte notatki trafiają tutaj i można je przywrócić.",
+                                                "Deleted notes land here and can be restored."))
                 )
             } else {
                 List {
@@ -860,21 +897,21 @@ struct TrashView: View {
                                 Text(note.title)
                                     .lineLimit(1)
                                 if let deletedAt = note.deletedAt {
-                                    Text("Usunięto \(deletedAt.noteMDisplay)")
+                                    Text(settings.t("Usunięto \(deletedAt.noteMDisplay)", "Deleted \(deletedAt.noteMDisplay)"))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()
-                            Button("Przywróć") { model.restore(note) }
-                            Button("Usuń trwale", role: .destructive) { model.deletePermanently(note) }
+                            Button(settings.t("Przywróć", "Restore")) { model.restore(note) }
+                            Button(settings.t("Usuń trwale", "Delete permanently"), role: .destructive) { model.deletePermanently(note) }
                         }
                         .padding(.vertical, 2)
                     }
                 }
             }
         }
-        .navigationTitle("Kosz")
+        .navigationTitle(settings.t("Kosz", "Trash"))
     }
 }
 
@@ -957,7 +994,7 @@ private struct FolderColorMenu: NSViewRepresentable {
 
         override func rightMouseDown(with event: NSEvent) {
             let menu = NSMenu()
-            let parent = NSMenuItem(title: "Kolor ikony folderu", action: nil, keyEquivalent: "")
+            let parent = NSMenuItem(title: Loc.t("Kolor ikony folderu", "Folder icon color"), action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             for theme in AppTheme.all {
                 let item = NSMenuItem(title: theme.name, action: #selector(pick(_:)), keyEquivalent: "")
@@ -967,7 +1004,7 @@ private struct FolderColorMenu: NSViewRepresentable {
                 submenu.addItem(item)
             }
             submenu.addItem(.separator())
-            let byDefault = NSMenuItem(title: "Domyślny", action: #selector(pickDefault), keyEquivalent: "")
+            let byDefault = NSMenuItem(title: Loc.t("Domyślny", "Default"), action: #selector(pickDefault), keyEquivalent: "")
             byDefault.target = self
             submenu.addItem(byDefault)
             parent.submenu = submenu
@@ -1052,7 +1089,7 @@ private struct NoteRightClickMenu: NSViewRepresentable {
         override func rightMouseDown(with event: NSEvent) {
             let menu = NSMenu()
 
-            let pin = NSMenuItem(title: pinned ? "Odepnij" : "Przypnij",
+            let pin = NSMenuItem(title: pinned ? Loc.t("Odepnij", "Unpin") : Loc.t("Przypnij", "Pin"),
                                  action: #selector(togglePin), keyEquivalent: "")
             pin.target = self
             pin.image = NSImage(systemSymbolName: pinned ? "pin.slash" : "pin",
@@ -1061,7 +1098,7 @@ private struct NoteRightClickMenu: NSViewRepresentable {
 
             // Folder-colour submenu — only for notes that live in a category folder.
             if !category.isEmpty {
-                let parent = NSMenuItem(title: "Kolor folderu „\(category)”",
+                let parent = NSMenuItem(title: Loc.t("Kolor folderu „\(category)”", "Color of folder “\(category)”"),
                                         action: nil, keyEquivalent: "")
                 let submenu = NSMenu()
                 for theme in AppTheme.all {
@@ -1072,7 +1109,7 @@ private struct NoteRightClickMenu: NSViewRepresentable {
                     submenu.addItem(item)
                 }
                 submenu.addItem(.separator())
-                let none = NSMenuItem(title: "Brak koloru", action: #selector(pickNoColor), keyEquivalent: "")
+                let none = NSMenuItem(title: Loc.t("Brak koloru", "No color"), action: #selector(pickNoColor), keyEquivalent: "")
                 none.target = self
                 submenu.addItem(none)
                 parent.submenu = submenu
@@ -1080,7 +1117,7 @@ private struct NoteRightClickMenu: NSViewRepresentable {
             }
 
             menu.addItem(.separator())
-            let del = NSMenuItem(title: "Usuń", action: #selector(deleteNote), keyEquivalent: "")
+            let del = NSMenuItem(title: Loc.t("Usuń", "Delete"), action: #selector(deleteNote), keyEquivalent: "")
             del.target = self
             del.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
             menu.addItem(del)
@@ -1193,21 +1230,25 @@ struct SidebarNavRow: View {
 /// button to remove it. Tapping the title opens the note.
 struct TasksView: View {
     let model: NotesModel
+    let settings: AppSettings
     let openNote: (UUID) -> Void
 
     var body: some View {
         Group {
             if model.taskNotes.isEmpty {
                 ContentUnavailableView(
-                    "Brak zadań",
+                    settings.t("Brak zadań", "No tasks"),
                     systemImage: "checklist",
-                    description: Text("Oznacz notatkę jako listę zadań przyciskiem na kafelku (Start) lub w pasku otwartej notatki, a pojawi się tutaj.")
+                    description: Text(settings.t(
+                        "Oznacz notatkę jako listę zadań przyciskiem na kafelku (Start) lub w pasku otwartej notatki, a pojawi się tutaj.",
+                        "Mark a note as a task list using the button on its card (Start) or in the open note's toolbar, and it will show up here."))
                 )
             } else {
                 List {
                     ForEach(model.taskNotes) { note in
                         TaskNoteRow(
                             note: note,
+                            settings: settings,
                             onToggleDone: { model.toggleTaskDone(note) },
                             onDelete: { model.delete(note) },
                             onOpen: { openNote(note.id) }
@@ -1216,7 +1257,7 @@ struct TasksView: View {
                 }
             }
         }
-        .navigationTitle("Zadania")
+        .navigationTitle(settings.t("Zadania", "Tasks"))
     }
 }
 
@@ -1225,6 +1266,7 @@ struct TasksView: View {
 /// only active once the task is ticked off.
 private struct TaskNoteRow: View {
     let note: Note
+    let settings: AppSettings
     let onToggleDone: () -> Void
     let onDelete: () -> Void
     let onOpen: () -> Void
@@ -1241,9 +1283,10 @@ private struct TaskNoteRow: View {
                 }
             }
             .buttonStyle(.plain)
-            .help(note.taskDone ? "Oznacz jako niezrobione" : "Oznacz jako zrobione")
+            .help(note.taskDone ? settings.t("Oznacz jako niezrobione", "Mark as not done")
+                                : settings.t("Oznacz jako zrobione", "Mark as done"))
 
-            Text(note.title.isEmpty ? "Bez tytułu" : note.title)
+            Text(note.title.isEmpty ? settings.t("Bez tytułu", "Untitled") : note.title)
                 .strikethrough(note.taskDone, color: .secondary)
                 .foregroundStyle(note.taskDone ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .lineLimit(1)
@@ -1259,7 +1302,8 @@ private struct TaskNoteRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!note.taskDone)
-            .help(note.taskDone ? "Usuń notatkę do kosza" : "Najpierw oznacz jako zrobione")
+            .help(note.taskDone ? settings.t("Usuń notatkę do kosza", "Move note to trash")
+                                : settings.t("Najpierw oznacz jako zrobione", "Mark as done first"))
         }
         .padding(.vertical, 4)
     }
@@ -1270,6 +1314,7 @@ private struct TaskNoteRow: View {
 /// note, and the arrow button opens the file/link itself.
 struct AttachmentsView: View {
     let model: NotesModel
+    let settings: AppSettings
     let openNote: (UUID) -> Void
 
     /// Fixed section order: images, then files, then links.
@@ -1283,19 +1328,22 @@ struct AttachmentsView: View {
         Group {
             if model.attachments.isEmpty {
                 ContentUnavailableView(
-                    "Brak załączników",
+                    settings.t("Brak załączników", "No attachments"),
                     systemImage: "paperclip",
-                    description: Text("Dodaj zdjęcie lub plik do notatki (przeciągnij i upuść), albo wpisz link — pojawią się tutaj z odnośnikiem do notatki.")
+                    description: Text(settings.t(
+                        "Dodaj zdjęcie lub plik do notatki (przeciągnij i upuść), albo wpisz link — pojawią się tutaj z odnośnikiem do notatki.",
+                        "Add an image or file to a note (drag & drop), or type a link — they'll appear here with a link back to the note."))
                 )
             } else {
                 List {
                     ForEach(order, id: \.self) { kind in
                         let refs = items(kind)
                         if !refs.isEmpty {
-                            Section(kind.sectionTitle) {
+                            Section(kind.sectionTitle(settings)) {
                                 ForEach(refs) { ref in
                                     AttachmentRow(
                                         ref: ref,
+                                        settings: settings,
                                         fileURL: fileURL(for: ref),
                                         onOpen: { openNote(ref.noteID) }
                                     )
@@ -1306,7 +1354,7 @@ struct AttachmentsView: View {
                 }
             }
         }
-        .navigationTitle("Załączniki")
+        .navigationTitle(settings.t("Załączniki", "Attachments"))
     }
 
     /// Absolute URL of a local attachment file (`nil` for links).
@@ -1321,6 +1369,7 @@ struct AttachmentsView: View {
 /// item's label, the note it belongs to, and a button to open the file/link.
 private struct AttachmentRow: View {
     let ref: AttachmentRef
+    let settings: AppSettings
     let fileURL: URL?
     let onOpen: () -> Void
 
@@ -1334,7 +1383,7 @@ private struct AttachmentRow: View {
                     Text(ref.label)
                         .lineLimit(1)
                         .truncationMode(ref.kind == .link ? .middle : .tail)
-                    Text("w: \(ref.noteTitle.isEmpty ? "Bez tytułu" : ref.noteTitle)")
+                    Text(settings.t("w: ", "in: ") + (ref.noteTitle.isEmpty ? settings.t("Bez tytułu", "Untitled") : ref.noteTitle))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1344,14 +1393,15 @@ private struct AttachmentRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: openExternally)
-            .help(ref.kind == .link ? "Otwórz link w przeglądarce" : "Otwórz podgląd")
+            .help(ref.kind == .link ? settings.t("Otwórz link w przeglądarce", "Open link in browser")
+                                    : settings.t("Otwórz podgląd", "Open preview"))
 
             Button(action: onOpen) {
                 Image(systemName: "note.text")
             }
             .buttonStyle(.plain)
             .foregroundStyle(.tint)
-            .help("Przejdź do notatki, w której się znajduje")
+            .help(settings.t("Przejdź do notatki, w której się znajduje", "Go to the note it belongs to"))
         }
         .padding(.vertical, 4)
     }
@@ -1386,11 +1436,11 @@ private struct AttachmentRow: View {
 enum StartLayout: String, CaseIterable, Identifiable {
     case sections, columns, stacks
     var id: String { rawValue }
-    var label: String {
+    func label(_ s: AppSettings) -> String {
         switch self {
-        case .sections: return "Sekcje"
-        case .columns:  return "Kolumny"
-        case .stacks:   return "Stosy"
+        case .sections: return s.t("Sekcje", "Sections")
+        case .columns:  return s.t("Kolumny", "Columns")
+        case .stacks:   return s.t("Stosy", "Stacks")
         }
     }
 }
@@ -1401,6 +1451,7 @@ enum StartLayout: String, CaseIterable, Identifiable {
 /// stacks (chosen in Settings).
 struct StartView: View {
     let model: NotesModel
+    let settings: AppSettings
     var accent: Color = .accentColor
     var layout: StartLayout = .sections
     let openNote: (UUID) -> Void
@@ -1437,10 +1488,10 @@ struct StartView: View {
             else { older.append(note) }
         }
         var out: [(String, [Note])] = []
-        if !today.isEmpty { out.append(("Dzisiaj", today)) }
-        if !yesterday.isEmpty { out.append(("Wczoraj", yesterday)) }
-        if !week.isEmpty { out.append(("Ostatnie 7 dni", week)) }
-        if !older.isEmpty { out.append(("Starsze", older)) }
+        if !today.isEmpty { out.append((settings.t("Dzisiaj", "Today"), today)) }
+        if !yesterday.isEmpty { out.append((settings.t("Wczoraj", "Yesterday"), yesterday)) }
+        if !week.isEmpty { out.append((settings.t("Ostatnie 7 dni", "Last 7 days"), week)) }
+        if !older.isEmpty { out.append((settings.t("Starsze", "Older"), older)) }
         return out
     }
 
@@ -1450,11 +1501,13 @@ struct StartView: View {
 
             if results.isEmpty {
                 ContentUnavailableView(
-                    query.isEmpty ? "Brak notatek" : "Brak wyników",
+                    query.isEmpty ? settings.t("Brak notatek", "No notes") : settings.t("Brak wyników", "No results"),
                     systemImage: query.isEmpty ? "note.text" : "magnifyingglass",
                     description: Text(query.isEmpty
-                                      ? "Utwórz pierwszą notatkę przyciskiem „Nowa notatka”."
-                                      : "Żadna notatka nie pasuje do „\(query)”.")
+                                      ? settings.t("Utwórz pierwszą notatkę przyciskiem „Nowa notatka”.",
+                                                   "Create your first note with the “New note” button.")
+                                      : settings.t("Żadna notatka nie pasuje do „\(query)”.",
+                                                   "No note matches “\(query)”."))
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -1465,7 +1518,7 @@ struct StartView: View {
                 }
             }
         }
-        .navigationTitle("Start")
+        .navigationTitle(settings.t("Start", "Start"))
         .onAppear { buildIndex() }
         .onChange(of: model.notes.count) { buildIndex() }
     }
@@ -1476,7 +1529,7 @@ struct StartView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("Szukaj w notatkach…", text: $query)
+            TextField(settings.t("Szukaj w notatkach…", "Search notes…"), text: $query)
                 .textFieldStyle(.plain)
             if !query.isEmpty {
                 Button { query = "" } label: {
@@ -1484,7 +1537,7 @@ struct StartView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Wyczyść")
+                .help(settings.t("Wyczyść", "Clear"))
             }
         }
         .padding(10)
@@ -1553,7 +1606,7 @@ struct StartView: View {
                         .foregroundStyle(accent)
                 }
                 .buttonStyle(.plain)
-                .help("Wróć do stosów")
+                .help(settings.t("Wróć do stosów", "Back to stacks"))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
 
@@ -1571,7 +1624,7 @@ struct StartView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 20)], spacing: 20) {
                     ForEach(sections, id: \.title) { section in
                         Button { openedStack = section.title } label: {
-                            StackTile(title: section.title, count: section.notes.count, accent: accent)
+                            StackTile(title: section.title, count: section.notes.count, settings: settings, accent: accent)
                         }
                         .buttonStyle(.plain)
                     }
@@ -1589,6 +1642,7 @@ struct StartView: View {
         // toggle button inside the card reliably gets its own clicks on macOS.
         NoteCard(
             note: note,
+            settings: settings,
             accent: accent,
             coverColor: AppTheme.color(id: model.categoryColorID(of: note)),
             snippet: contentIndex[note.id] ?? "",
@@ -1613,6 +1667,7 @@ struct StartView: View {
 struct StackTile: View {
     let title: String
     let count: Int
+    let settings: AppSettings
     var accent: Color = .accentColor
 
     var body: some View {
@@ -1641,7 +1696,7 @@ struct StackTile: View {
 
             VStack(spacing: 2) {
                 Text(title).font(.headline)
-                Text("\(count) \(count == 1 ? "notatka" : "notatek")")
+                Text("\(count) " + (count == 1 ? settings.t("notatka", "note") : settings.t("notatek", "notes")))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -1654,6 +1709,7 @@ struct StackTile: View {
 /// searching, the preview centres on the first match and highlights the term.
 struct NoteCard: View {
     let note: Note
+    let settings: AppSettings
     var accent: Color = .accentColor
     var coverColor: Color? = nil
     /// Full note content, used to show a short text preview.
@@ -1715,7 +1771,8 @@ struct NoteCard: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(isTaskList ? "Usuń oznaczenie listy zadań" : "Oznacz jako listę zadań")
+                    .help(isTaskList ? settings.t("Usuń oznaczenie listy zadań", "Remove task-list mark")
+                                     : settings.t("Oznacz jako listę zadań", "Mark as task list"))
                 }
                 if !previewText.isEmpty {
                     Text(highlighted(previewText))

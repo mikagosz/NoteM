@@ -127,7 +127,7 @@ final class SyncManager {
 
         // Detect iCloud Drive going away (disabled in System Preferences, etc.).
         guard StorageLocation.iCloudRoot != nil else {
-            syncError = "iCloud Drive niedostępny — działam lokalnie"
+            syncError = Loc.t("iCloud Drive niedostępny — działam lokalnie", "iCloud Drive unavailable — working locally")
             return
         }
 
@@ -161,21 +161,23 @@ struct SyncSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Synchronizacja")
+            Text(settings.t("Synchronizacja", "Sync"))
                 .font(.headline)
-            Text("Przechowuj notatki w iCloud Drive, aby były dostępne i aktualne na innych Macach. "
-                 + "Zmiany z innego komputera wykrywane są co ~7 sekund.")
+            Text(settings.t("Przechowuj notatki w iCloud Drive, aby były dostępne i aktualne na innych Macach. "
+                            + "Zmiany z innego komputera wykrywane są co ~7 sekund.",
+                            "Store notes in iCloud Drive so they're available and up to date on other Macs. "
+                            + "Changes from another computer are detected about every 7 seconds."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Synchronizuj przez iCloud Drive", isOn: Binding(
+            Toggle(settings.t("Synchronizuj przez iCloud Drive", "Sync via iCloud Drive"), isOn: Binding(
                 get: { settings.syncEnabled },
                 set: { $0 ? (showEnableDialog = true) : (showDisableDialog = true) }
             ))
             .disabled(!iCloudAvailable)
 
             if !iCloudAvailable {
-                Label("iCloud Drive nie jest skonfigurowany na tym Macu.", systemImage: "exclamationmark.triangle")
+                Label(settings.t("iCloud Drive nie jest skonfigurowany na tym Macu.", "iCloud Drive isn't set up on this Mac."), systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -189,7 +191,7 @@ struct SyncSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Spróbuj ponownie") {
+                    Button(settings.t("Spróbuj ponownie", "Try again")) {
                         SyncManager.shared.retrySync()
                     }
                     .font(.caption)
@@ -203,11 +205,12 @@ struct SyncSettingsView: View {
             HStack(spacing: 8) {
                 Image(systemName: settings.syncEnabled ? "checkmark.icloud.fill" : "internaldrive")
                     .foregroundStyle(settings.syncEnabled ? .blue : .secondary)
-                Text(settings.syncEnabled ? "Notatki w iCloud Drive" : "Notatki lokalne (Dokumenty)")
+                Text(settings.syncEnabled ? settings.t("Notatki w iCloud Drive", "Notes in iCloud Drive")
+                                          : settings.t("Notatki lokalne (Dokumenty)", "Local notes (Documents)"))
                     .font(.callout)
                 Spacer()
                 if let date = lastActivity {
-                    Text("Ostatnia zmiana: \(date, format: .dateTime.hour().minute().second())")
+                    Text(settings.t("Ostatnia zmiana: ", "Last change: ") + date.formatted(.dateTime.hour().minute().second()))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -220,7 +223,7 @@ struct SyncSettingsView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Button("Pokaż w Finderze") {
+                Button(settings.t("Pokaż w Finderze", "Show in Finder")) {
                     NSWorkspace.shared.activateFileViewerSelecting([model.rootURL])
                 }
             }
@@ -229,19 +232,19 @@ struct SyncSettingsView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .confirmationDialog("Włączyć synchronizację iCloud?", isPresented: $showEnableDialog, titleVisibility: .visible) {
-            Button("Przenieś istniejące notatki do iCloud") { apply(enabled: true, move: true) }
-            Button("Zacznij od nowa w iCloud") { apply(enabled: true, move: false) }
-            Button("Anuluj", role: .cancel) {}
+        .confirmationDialog(settings.t("Włączyć synchronizację iCloud?", "Enable iCloud sync?"), isPresented: $showEnableDialog, titleVisibility: .visible) {
+            Button(settings.t("Przenieś istniejące notatki do iCloud", "Move existing notes to iCloud")) { apply(enabled: true, move: true) }
+            Button(settings.t("Zacznij od nowa w iCloud", "Start fresh in iCloud")) { apply(enabled: true, move: false) }
+            Button(settings.t("Anuluj", "Cancel"), role: .cancel) {}
         } message: {
-            Text("Notatki będą przechowywane w iCloud Drive.")
+            Text(settings.t("Notatki będą przechowywane w iCloud Drive.", "Notes will be stored in iCloud Drive."))
         }
-        .confirmationDialog("Wyłączyć synchronizację iCloud?", isPresented: $showDisableDialog, titleVisibility: .visible) {
-            Button("Przenieś notatki z powrotem na ten Mac") { apply(enabled: false, move: true) }
-            Button("Zostaw w iCloud, używaj lokalnych") { apply(enabled: false, move: false) }
-            Button("Anuluj", role: .cancel) {}
+        .confirmationDialog(settings.t("Wyłączyć synchronizację iCloud?", "Disable iCloud sync?"), isPresented: $showDisableDialog, titleVisibility: .visible) {
+            Button(settings.t("Przenieś notatki z powrotem na ten Mac", "Move notes back to this Mac")) { apply(enabled: false, move: true) }
+            Button(settings.t("Zostaw w iCloud, używaj lokalnych", "Leave in iCloud, use local")) { apply(enabled: false, move: false) }
+            Button(settings.t("Anuluj", "Cancel"), role: .cancel) {}
         } message: {
-            Text("Notatki wrócą do folderu Dokumenty na tym Macu.")
+            Text(settings.t("Notatki wrócą do folderu Dokumenty na tym Macu.", "Notes will return to the Documents folder on this Mac."))
         }
     }
 
@@ -263,16 +266,16 @@ struct ConflictResolverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Konflikty synchronizacji")
+                Text(Loc.t("Konflikty synchronizacji", "Sync conflicts"))
                     .font(.headline)
                 Spacer()
-                Button("Gotowe", action: onDone)
+                Button(Loc.t("Gotowe", "Done"), action: onDone)
             }
             .padding()
             Divider()
 
             if model.conflicts.isEmpty {
-                ContentUnavailableView("Brak konfliktów", systemImage: "checkmark.circle")
+                ContentUnavailableView(Loc.t("Brak konfliktów", "No conflicts"), systemImage: "checkmark.circle")
                     .frame(maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -296,7 +299,7 @@ private struct ConflictRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(conflict.versions.first?.title ?? "Notatka")
+            Text(conflict.versions.first?.title ?? Loc.t("Notatka", "Note"))
                 .font(.headline)
             HStack(alignment: .top, spacing: 12) {
                 ForEach(conflict.versions) { version in
@@ -318,7 +321,7 @@ private struct ConflictRow: View {
                         .frame(height: 140)
                         .padding(6)
                         .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.3)))
-                        Button("Zachowaj tę wersję") {
+                        Button(Loc.t("Zachowaj tę wersję", "Keep this version")) {
                             model.resolveConflict(conflict, keeping: version)
                         }
                         .buttonStyle(.borderedProminent)

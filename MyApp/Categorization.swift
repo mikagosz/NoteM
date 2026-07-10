@@ -118,6 +118,20 @@ final class AppSettings {
         didSet { persistSmartFolders() }
     }
 
+    /// UI language of the app (also selects the spell-checker dictionary).
+    var language: AppLanguage {
+        didSet {
+            defaults.set(language.rawValue, forKey: Loc.key)
+            Loc.language = language
+        }
+    }
+
+    /// Returns the Polish or English variant for the current UI language. Reading
+    /// `language` here makes SwiftUI views re-render when the language changes.
+    func t(_ pl: String, _ en: String) -> String {
+        language == .pl ? pl : en
+    }
+
     /// Highlight misspelled words (Polish dictionary) while typing.
     var spellCheckEnabled: Bool {
         didSet { defaults.set(spellCheckEnabled, forKey: Self.spellCheckKey) }
@@ -176,6 +190,8 @@ final class AppSettings {
         // Spell checking on by default; auto-correct off (opt-in).
         self.spellCheckEnabled = defaults.object(forKey: Self.spellCheckKey) as? Bool ?? true
         self.autocorrectEnabled = defaults.bool(forKey: Self.autocorrectKey)
+        self.language = AppLanguage(rawValue: defaults.string(forKey: Loc.key) ?? AppLanguage.pl.rawValue) ?? .pl
+        Loc.language = self.language
     }
 
     func addRule() {
@@ -226,18 +242,21 @@ struct TrashSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Kosz")
+            Text(settings.t("Kosz", "Trash"))
                 .font(.headline)
-            Text("Usunięte notatki trafiają do kosza i są automatycznie kasowane po upływie "
-                 + "podanej liczby dni. Ustaw 0, aby wyłączyć automatyczne czyszczenie.")
+            Text(settings.t("Usunięte notatki trafiają do kosza i są automatycznie kasowane po upływie "
+                            + "podanej liczby dni. Ustaw 0, aby wyłączyć automatyczne czyszczenie.",
+                            "Deleted notes go to the trash and are automatically removed after the given "
+                            + "number of days. Set 0 to disable automatic cleanup."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Stepper(value: $settings.trashRetentionDays, in: 0...365) {
                 if settings.trashRetentionDays == 0 {
-                    Text("Automatyczne czyszczenie: wyłączone")
+                    Text(settings.t("Automatyczne czyszczenie: wyłączone", "Automatic cleanup: off"))
                 } else {
-                    Text("Czyść po: \(settings.trashRetentionDays) dniach")
+                    Text(settings.t("Czyść po: \(settings.trashRetentionDays) dniach",
+                                    "Clean up after \(settings.trashRetentionDays) days"))
                 }
             }
             .frame(maxWidth: 320, alignment: .leading)
@@ -255,21 +274,23 @@ struct RulesSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Reguły katalogowania")
+            Text(settings.t("Reguły katalogowania", "Filing rules"))
                 .font(.headline)
-            Text("Notatka zawierająca słowo kluczowe trafia do wskazanego folderu. "
-                 + "Sprawdzana jest pierwsza pasująca reguła od góry — przeciągnij, by zmienić kolejność. "
-                 + "W ścieżce możesz użyć {date} i {time}.")
+            Text(settings.t("Notatka zawierająca słowo kluczowe trafia do wskazanego folderu. "
+                            + "Sprawdzana jest pierwsza pasująca reguła od góry — przeciągnij, by zmienić kolejność. "
+                            + "W ścieżce możesz użyć {date} i {time}.",
+                            "A note containing the keyword is moved to the given folder. The first matching rule "
+                            + "from the top wins — drag to reorder. You can use {date} and {time} in the path."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             List {
                 ForEach($settings.rules) { $rule in
                     HStack(spacing: 8) {
-                        TextField("słowo kluczowe", text: $rule.keyword)
+                        TextField(settings.t("słowo kluczowe", "keyword"), text: $rule.keyword)
                         Image(systemName: "arrow.right")
                             .foregroundStyle(.secondary)
-                        TextField("folder, np. Praca/{date}", text: $rule.targetFolderPattern)
+                        TextField(settings.t("folder, np. Praca/{date}", "folder, e.g. Work/{date}"), text: $rule.targetFolderPattern)
                     }
                     .textFieldStyle(.roundedBorder)
                 }
@@ -282,11 +303,12 @@ struct RulesSettingsView: View {
                 Button {
                     settings.addRule()
                 } label: {
-                    Label("Dodaj regułę", systemImage: "plus")
+                    Label(settings.t("Dodaj regułę", "Add rule"), systemImage: "plus")
                 }
                 Spacer()
                 if !settings.rules.isEmpty {
-                    Text("Notatki bez dopasowania trafiają do „\(CategoryEngine.inbox)”.")
+                    Text(settings.t("Notatki bez dopasowania trafiają do „\(CategoryEngine.inbox)”.",
+                                    "Notes with no match go to “\(CategoryEngine.inbox)”."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
