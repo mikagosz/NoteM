@@ -650,6 +650,36 @@ final class NoteTextView: NSTextView {
         maybeShowWikiCompletion()
     }
 
+    // MARK: - Delete a click-selected image with Backspace / Delete
+
+    override func deleteBackward(_ sender: Any?) {
+        if deleteSelectedImage() { return }
+        super.deleteBackward(sender)
+    }
+
+    override func deleteForward(_ sender: Any?) {
+        if deleteSelectedImage() { return }
+        super.deleteForward(sender)
+    }
+
+    /// Removes the image selected by click (`selectedImageRange`) when there's no
+    /// text selection, so Backspace/Delete deletes it. Returns `true` when it did.
+    @discardableResult
+    private func deleteSelectedImage() -> Bool {
+        guard let storage = textStorage,
+              let range = selectedImageRange,
+              selectedRange().length == 0,
+              range.location < storage.length,
+              storage.attribute(.attachment, at: range.location, effectiveRange: nil) is NSTextAttachment,
+              shouldChangeText(in: range, replacementString: "") else { return false }
+        storage.replaceCharacters(in: range, with: "")
+        setSelectedRange(NSRange(location: range.location, length: 0))
+        selectedImageRange = nil
+        didChangeText()
+        needsDisplay = true
+        return true
+    }
+
     // MARK: - Image resizing (Word-style selection with 8 handles)
 
     /// The eight resize handles around a selected image, like Word.
