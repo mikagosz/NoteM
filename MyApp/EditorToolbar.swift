@@ -89,30 +89,61 @@ final class FloatingFormatPanel: NSPanel {
 /// Always-visible formatting toolbar pinned to the bottom of the note editor.
 struct FormatBar: View {
     let controller: RichTextController
+    /// App theme accent colour, used for the active-button highlight.
+    var accent: Color = .accentColor
+
+    /// Toggle formats active at the caret, so the matching buttons light up.
+    @State private var active: ActiveFormats = []
+    /// Paragraph style at the caret, to highlight the "Aa" style panel.
+    @State private var paragraphStyle: ParagraphStyleKind = .body
+    /// Whether the "Aa" style panel is shown one row above the main capsule.
+    @State private var showStyle = false
 
     var body: some View {
-        // Floating rounded "capsule" of tools (like the top toolbar / the panel
-        // above a selection), rather than a full-width bar.
+        VStack(spacing: 8) {
+            if showStyle {
+                StyleCapsule(controller: controller, accent: accent,
+                             active: active, style: paragraphStyle)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            mainCapsule
+        }
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity)   // centre the capsules horizontally
+        .onAppear {
+            refreshState()
+            controller.onActiveFormatsChange = { _ in refreshState() }
+        }
+    }
+
+    private func refreshState() {
+        active = controller.currentActiveFormats()
+        paragraphStyle = controller.currentParagraphStyle()
+    }
+
+    /// The always-visible bottom capsule of quick tools.
+    private var mainCapsule: some View {
         HStack(spacing: 0) {
+            // "Aa" – opens the style panel above.
+            aaButton
+            divider()
             // Text style
             group {
-                fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"),  action: controller.toggleBold)
-                fmtBtn("italic", label: Loc.t("Kursywa", "Italic"),      action: controller.toggleItalic)
-                fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), action: { controller.toggleUnderline() })
+                fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"), active: active.contains(.bold),  action: controller.toggleBold)
+                fmtBtn("italic", label: Loc.t("Kursywa", "Italic"), active: active.contains(.italic),      action: controller.toggleItalic)
+                fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), active: active.contains(.underline), action: { controller.toggleUnderline() })
             }
             divider()
-            // Headers
-            group {
-                headerBtn("H1", action: { controller.toggleHeader(1) })
-                headerBtn("H2", action: { controller.toggleHeader(2) })
-                headerBtn("H3", action: { controller.toggleHeader(3) })
-            }
+            // Font size (type a value or pick one from the list)
+            FontSizeField(controller: controller)
+                .help(Loc.t("Rozmiar tekstu", "Text size"))
+                .padding(.horizontal, 4)
             divider()
             // Lists
             group {
-                fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), action: { controller.toggleList("bullet") })
-                fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), action: { controller.toggleList("ordered") })
-                fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"),        action: controller.toggleChecklist)
+                fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), active: active.contains(.bulletList), action: { controller.toggleList("bullet") })
+                fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), active: active.contains(.numberedList), action: { controller.toggleList("ordered") })
+                fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"), active: active.contains(.checklist),        action: controller.toggleChecklist)
             }
             divider()
             // Insert
@@ -128,8 +159,22 @@ struct FormatBar: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(.quaternary, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-        .padding(.bottom, 10)
-        .frame(maxWidth: .infinity)   // centre the capsule horizontally
+    }
+
+    private var aaButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) { showStyle.toggle() }
+        } label: {
+            Text("Aa")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(showStyle ? accent : Color.primary)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(showStyle ? accent.opacity(0.20) : Color.clear))
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(Loc.t("Style tekstu", "Text styles"))
     }
 
     private func group<V: View>(@ViewBuilder _ content: () -> V) -> some View {
@@ -140,25 +185,181 @@ struct FormatBar: View {
         Divider().frame(height: 20).padding(.horizontal, 4)
     }
 
-    private func fmtBtn(_ icon: String, label: String, action: @escaping () -> Void) -> some View {
+    private func fmtBtn(_ icon: String, label: String, active: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
+                .foregroundStyle(active ? accent : Color.primary)
+                .frame(width: 30, height: 30)
+                .background(
+                    Circle().fill(active ? accent.opacity(0.20) : Color.clear)
+                )
                 .frame(width: 34, height: 34)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(label)
     }
+}
 
-    private func headerBtn(_ text: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+// MARK: - Style panel ("Aa")
+
+/// The second capsule that appears above the main bar when "Aa" is tapped.
+/// Three rows: paragraph styles, character formatting, lists & paragraph layout.
+private struct StyleCapsule: View {
+    let controller: RichTextController
+    var accent: Color
+    let active: ActiveFormats
+    let style: ParagraphStyleKind
+
+    @State private var textColor: Color = .primary
+
+    var body: some View {
+        VStack(spacing: 2) {
+            // Row 1 — paragraph styles.
+            HStack(spacing: 6) {
+                styleBtn(Loc.t("Tytuł", "Title"), .title)
+                styleBtn(Loc.t("Nagłówek", "Heading"), .heading)
+                styleBtn(Loc.t("Podnagłówek", "Subheading"), .subheading)
+                styleBtn(Loc.t("Treść", "Body"), .body)
+                styleBtn(Loc.t("Mono", "Mono"), .monospaced)
+            }
+            Divider()
+            // Row 2 — character formatting + lists & paragraph layout (merged).
+            HStack(spacing: 2) {
+                iconBtn("bold",          active: active.contains(.bold),          help: Loc.t("Pogrubienie", "Bold")) { controller.toggleBold() }
+                iconBtn("italic",        active: active.contains(.italic),        help: Loc.t("Kursywa", "Italic")) { controller.toggleItalic() }
+                iconBtn("underline",     active: active.contains(.underline),     help: Loc.t("Podkreślenie", "Underline")) { controller.toggleUnderline() }
+                iconBtn("strikethrough", active: active.contains(.strikethrough), help: Loc.t("Przekreślenie", "Strikethrough")) { controller.toggleStrikethrough() }
+                rowDivider()
+                iconBtn("highlighter", active: false, help: Loc.t("Zakreślacz", "Highlighter")) {
+                    controller.toggleHighlight(NSColor.systemYellow.withAlphaComponent(0.4))
+                }
+                ColorPicker("", selection: $textColor, supportsOpacity: false)
+                    .labelsHidden()
+                    .frame(width: 34, height: 30)
+                    .help(Loc.t("Kolor tekstu", "Text colour"))
+                    .onChange(of: textColor) { _, newValue in
+                        controller.setTextColor(NSColor(newValue))
+                    }
+                rowDivider()
+                iconBtn("list.bullet", active: active.contains(.bulletList),   help: Loc.t("Lista punktowana", "Bulleted list")) { controller.toggleList("bullet") }
+                iconBtn("list.dash",   active: active.contains(.dashList),     help: Loc.t("Lista z myślnikami", "Dashed list")) { controller.toggleList("dash") }
+                iconBtn("list.number", active: active.contains(.numberedList), help: Loc.t("Lista numerowana", "Numbered list")) { controller.toggleList("ordered") }
+                rowDivider()
+                iconBtn("decrease.indent", active: false, help: Loc.t("Zmniejsz wcięcie", "Decrease indent")) { controller.changeIndent(by: -18) }
+                iconBtn("increase.indent", active: false, help: Loc.t("Zwiększ wcięcie", "Increase indent")) { controller.changeIndent(by: 18) }
+                rowDivider()
+                iconBtn("text.quote", active: active.contains(.blockquote), help: Loc.t("Cytat blokowy", "Block quote")) { controller.toggleBlockquote() }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .fixedSize()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.quaternary, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+    }
+
+    private func rowDivider() -> some View {
+        Divider().frame(height: 20).padding(.horizontal, 6)
+    }
+
+    private func styleBtn(_ text: String, _ kind: ParagraphStyleKind) -> some View {
+        let selected = style == kind
+        return Button { controller.setParagraphStyle(kind) } label: {
             Text(text)
-                .font(.system(size: 12, weight: .bold))
-                .frame(width: 34, height: 34)
+                .font(styleFont(kind))
+                .foregroundStyle(selected ? accent : Color.primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(selected ? accent.opacity(0.18) : Color.clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func styleFont(_ kind: ParagraphStyleKind) -> Font {
+        switch kind {
+        case .title:      return .system(size: 16, weight: .bold)
+        case .heading:    return .system(size: 14, weight: .bold)
+        case .subheading: return .system(size: 13, weight: .semibold)
+        case .body:       return .system(size: 13)
+        case .monospaced: return .system(size: 13, design: .monospaced)
+        }
+    }
+
+    private func iconBtn(_ icon: String, active: Bool, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .foregroundStyle(active ? accent : Color.primary)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(active ? accent.opacity(0.20) : Color.clear))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(text)
+        .help(help)
+    }
+}
+
+// MARK: - Font size field
+
+/// A compact editable combo box for the text size: the user can pick a preset
+/// from the drop-down or type any value and press Return. Backed by NSComboBox
+/// so it behaves exactly like the native size fields in other macOS apps.
+private struct FontSizeField: NSViewRepresentable {
+    let controller: RichTextController
+
+    static let presets: [Int] = [9, 10, 11, 12, 13, 14, 16, 18, 24, 36, 48, 72]
+
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let combo = NSComboBox()
+        combo.addItems(withObjectValues: Self.presets.map { "\($0)" })
+        combo.isEditable = true
+        combo.completes = true
+        combo.controlSize = .small
+        combo.font = .systemFont(ofSize: 12)
+        combo.delegate = context.coordinator
+        combo.stringValue = "\(Int(controller.currentFontSize().rounded()))"
+        combo.setContentHuggingPriority(.required, for: .horizontal)
+        combo.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        // 30 pt tall inside the 38 pt capsule → 4 pt gap top & bottom.
+        combo.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        context.coordinator.combo = combo
+
+        // Keep the field in sync as the caret / selection moves in the editor.
+        controller.onFontSizeChange = { [weak combo] size in
+            let text = "\(Int(size.rounded()))"
+            if combo?.stringValue != text { combo?.stringValue = text }
+        }
+        return combo
+    }
+
+    func updateNSView(_ nsView: NSComboBox, context: Context) {}
+
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        let controller: RichTextController
+        weak var combo: NSComboBox?
+
+        init(controller: RichTextController) { self.controller = controller }
+
+        // Picked from the drop-down list.
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let combo, combo.indexOfSelectedItem >= 0 else { return }
+            let value = combo.itemObjectValue(at: combo.indexOfSelectedItem) as? String ?? ""
+            apply(value)
+        }
+
+        // Typed a custom value and committed with Return / focus loss.
+        func controlTextDidEndEditing(_ obj: Notification) {
+            apply(combo?.stringValue ?? "")
+        }
+
+        private func apply(_ text: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            guard let value = Double(trimmed), value > 0 else { return }
+            controller.setFontSize(CGFloat(value))
+        }
     }
 }
 

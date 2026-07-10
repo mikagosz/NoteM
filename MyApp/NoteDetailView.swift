@@ -53,7 +53,7 @@ struct NoteDetailView: View {
         }
         // Float the tool capsule over the editor — no reserved bottom bar.
         .overlay(alignment: .bottom) {
-            FormatBar(controller: controller)
+            FormatBar(controller: controller, accent: accent)
         }
         .navigationTitle(note.title)
         .toolbar {
