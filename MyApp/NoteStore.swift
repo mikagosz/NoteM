@@ -365,7 +365,7 @@ final class NoteStore {
             try data.write(to: url, options: .atomic)
             NotificationCenter.default.post(name: .noteMStoreDidWriteManifest, object: nil)
         } catch {
-            onWriteError?("iCloud Drive niedostępny — działam lokalnie")
+            onWriteError?(Loc.t("iCloud Drive niedostępny — działam lokalnie", "iCloud Drive unavailable — working locally"))
         }
     }
 

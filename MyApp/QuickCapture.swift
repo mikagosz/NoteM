@@ -10,10 +10,10 @@ enum QuickCaptureCorner: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .topLeft: return "Lewy górny"
-        case .topRight: return "Prawy górny"
-        case .bottomLeft: return "Lewy dolny"
-        case .bottomRight: return "Prawy dolny"
+        case .topLeft: return Loc.t("Lewy górny", "Top left")
+        case .topRight: return Loc.t("Prawy górny", "Top right")
+        case .bottomLeft: return Loc.t("Lewy dolny", "Bottom left")
+        case .bottomRight: return Loc.t("Prawy dolny", "Bottom right")
         }
     }
 }
@@ -349,7 +349,7 @@ struct QuickCaptureTriggerView: View {
                 .animation(.easeOut(duration: 0.12), value: hovering)
         }
         .buttonStyle(.plain)
-        .help("Szybka notatka")
+        .help(Loc.t("Szybka notatka", "Quick note"))
         .onHover { hovering = $0 }
     }
 }
@@ -405,7 +405,7 @@ struct QuickCaptureView: View {
             .frame(width: 360, height: 400)
             // Close (discard) button — bottom-left.
             .overlay(alignment: .bottomLeading) {
-                Button("Zamknij") { onClose() }
+                Button(Loc.t("Zamknij", "Close")) { onClose() }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .controlSize(.small)
@@ -426,7 +426,8 @@ struct QuickCaptureView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help(isTaskList ? "Notatka zostanie zapisana jako zadanie" : "Zapisz jako zadanie")
+                    .help(isTaskList ? Loc.t("Notatka zostanie zapisana jako zadanie", "Note will be saved as a task")
+                                     : Loc.t("Zapisz jako zadanie", "Save as task"))
 
                     Button {
                         darkBackground.toggle()
@@ -437,9 +438,10 @@ struct QuickCaptureView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help(darkBackground ? "Przełącz na białe tło" : "Przełącz na czarne tło")
+                    .help(darkBackground ? Loc.t("Przełącz na białe tło", "Switch to white background")
+                                         : Loc.t("Przełącz na czarne tło", "Switch to black background"))
 
-                    Button("Zapisz") { saveAndClose() }
+                    Button(Loc.t("Zapisz", "Save")) { saveAndClose() }
                         .keyboardShortcut(.return, modifiers: [.command])
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
@@ -484,19 +486,24 @@ struct QuickCaptureSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Quick capture")
+            Text("Quick Capture")
                 .font(.headline)
-            Text("Najedź kursorem w aktywny róg ekranu — wysunie się mała ikonka. Kliknij ją, a pojawi się pływające pole do szybkiej notatki. "
-                 + "Sam róg nic nie otwiera, dopóki nie klikniesz ikonki. Możesz też nacisnąć ⌥⌘N w dowolnej aplikacji. "
-                 + "Możesz otworzyć kilka pól naraz — nowe nie zamyka poprzednich. Notatka trafia normalnie na listę i przechodzi przez reguły katalogowania.")
+            Text(settings.t(
+                    "Najedź kursorem w aktywny róg ekranu — wysunie się mała ikonka. Kliknij ją, a pojawi się pływające pole do szybkiej notatki. "
+                    + "Sam róg nic nie otwiera, dopóki nie klikniesz ikonki. Możesz też nacisnąć ⌥⌘N w dowolnej aplikacji. "
+                    + "Możesz otworzyć kilka pól naraz — nowe nie zamyka poprzednich. Notatka trafia normalnie na listę i przechodzi przez reguły katalogowania.",
+                    "Move the cursor into an active screen corner — a small icon slides out. Click it to open a floating quick-note field. "
+                    + "The corner opens nothing until you click the icon. You can also press ⌥⌘N in any app. "
+                    + "You can open several fields at once — new ones don't close the previous. The note lands on the list normally and goes through the filing rules."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Włącz szybką notatkę (róg ekranu / ⌥⌘N)", isOn: $settings.quickCaptureEnabled)
+            Toggle(settings.t("Włącz szybką notatkę (róg ekranu / ⌥⌘N)", "Enable quick capture (screen corner / ⌥⌘N)"),
+                   isOn: $settings.quickCaptureEnabled)
                 .onChange(of: settings.quickCaptureEnabled) { onChange() }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Aktywne rogi ekranu")
+                Text(settings.t("Aktywne rogi ekranu", "Active screen corners"))
                     .font(.callout)
                 ForEach(QuickCaptureCorner.allCases) { corner in
                     Toggle(corner.label, isOn: cornerBinding(corner))
@@ -510,17 +517,19 @@ struct QuickCaptureSettingsView: View {
                 Image(systemName: trusted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(trusted ? .green : .orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(trusted ? "Uprawnienia Dostępności przyznane" : "Brak uprawnień Dostępności")
+                    Text(trusted ? settings.t("Uprawnienia Dostępności przyznane", "Accessibility permission granted")
+                                 : settings.t("Brak uprawnień Dostępności", "No Accessibility permission"))
                         .font(.callout)
                     if !trusted {
-                        Text("Jeśli ikonka w rogu nie wysuwa się, dodaj NoteM w Ustawieniach systemowych.")
+                        Text(settings.t("Jeśli ikonka w rogu nie wysuwa się, dodaj NoteM w Ustawieniach systemowych.",
+                                        "If the corner icon doesn't slide out, add NoteM in System Settings."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
                 if !trusted {
-                    Button("Otwórz ustawienia") { Accessibility.openSettings() }
+                    Button(settings.t("Otwórz ustawienia", "Open Settings")) { Accessibility.openSettings() }
                 }
             }
 

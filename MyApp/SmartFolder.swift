@@ -45,6 +45,16 @@ struct SmartFolder: Identifiable, Codable, Hashable {
     static let dzisiejszeID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     static let przypieteID  = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
 
+    /// Localized display name: built-in folders are translated; user folders keep
+    /// their given name.
+    func displayName(_ s: AppSettings) -> String {
+        switch id {
+        case Self.dzisiejszeID: return s.t("Dzisiejsze", "Today")
+        case Self.przypieteID:  return s.t("Przypięte", "Pinned")
+        default:                return name
+        }
+    }
+
     static let predefined: [SmartFolder] = [
         SmartFolder(
             id: dzisiejszeID,

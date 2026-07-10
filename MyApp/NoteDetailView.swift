@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct NoteDetailView: View {
     let note: Note
     let model: NotesModel
+    let settings: AppSettings
     /// Theme accent colour, so toolbar icons and the tag bar follow the theme.
     var accent: Color = .accentColor
     /// Opens another note (used by wiki links and the backlinks panel).
@@ -58,56 +59,60 @@ struct NoteDetailView: View {
             // Left cluster: undo, redo, search, task-list toggle, pin, export PDF, print.
             ToolbarItem(placement: .automatic) {
                 Button { controller.undo() } label: {
-                    Label("Cofnij", systemImage: "arrow.uturn.backward")
+                    Label(settings.t("Cofnij", "Undo"), systemImage: "arrow.uturn.backward")
                         .foregroundStyle(accent)
                 }
-                .help("Cofnij ostatnią zmianę (⌘Z)")
+                .help(settings.t("Cofnij ostatnią zmianę (⌘Z)", "Undo last change (⌘Z)"))
             }
             ToolbarItem(placement: .automatic) {
                 Button { controller.redo() } label: {
-                    Label("Ponów", systemImage: "arrow.uturn.forward")
+                    Label(settings.t("Ponów", "Redo"), systemImage: "arrow.uturn.forward")
                         .foregroundStyle(accent)
                 }
-                .help("Ponów cofniętą zmianę (⇧⌘Z)")
+                .help(settings.t("Ponów cofniętą zmianę (⇧⌘Z)", "Redo change (⇧⌘Z)"))
             }
             ToolbarItem(placement: .automatic) {
                 Button { controller.showFindBar() } label: {
-                    Label("Szukaj w notatce", systemImage: "magnifyingglass")
+                    Label(settings.t("Szukaj w notatce", "Find in note"), systemImage: "magnifyingglass")
                         .foregroundStyle(accent)
                 }
-                .help("Szukaj w notatce (⌘F)")
+                .help(settings.t("Szukaj w notatce (⌘F)", "Find in note (⌘F)"))
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.toggleTaskList(note) } label: {
-                    Label(isTaskListNote ? "Usuń z zadań" : "Oznacz jako zadania",
+                    Label(isTaskListNote ? settings.t("Usuń z zadań", "Remove from tasks")
+                                         : settings.t("Oznacz jako zadania", "Mark as tasks"),
                           systemImage: isTaskListNote ? "checklist.checked" : "checklist")
                         .foregroundStyle(accent)
                 }
                 .help(isTaskListNote
-                      ? "Ta notatka jest listą zadań — kliknij, by zdjąć oznaczenie"
-                      : "Oznacz notatkę jako listę zadań (pojawi się w „Zadania”)")
+                      ? settings.t("Ta notatka jest listą zadań — kliknij, by zdjąć oznaczenie",
+                                   "This note is a task list — click to unmark it")
+                      : settings.t("Oznacz notatkę jako listę zadań (pojawi się w „Zadania”)",
+                                   "Mark the note as a task list (appears in “Tasks”)"))
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.togglePin(note) } label: {
-                    Label(note.pinned ? "Odepnij" : "Przypnij",
+                    Label(note.pinned ? settings.t("Odepnij", "Unpin") : settings.t("Przypnij", "Pin"),
                           systemImage: note.pinned ? "pin.fill" : "pin")
                         .foregroundStyle(accent)
                 }
-                .help(note.pinned ? "Odepnij notatkę" : "Przypnij notatkę na górze")
+                .help(note.pinned ? settings.t("Odepnij notatkę", "Unpin note")
+                                  : settings.t("Przypnij notatkę na górze", "Pin note to top"))
             }
             ToolbarItem(placement: .automatic) {
                 Button(action: exportToPDF) {
-                    Label("Eksportuj PDF", systemImage: "arrow.down.doc")
+                    Label(settings.t("Eksportuj PDF", "Export PDF"), systemImage: "arrow.down.doc")
                         .foregroundStyle(accent)
                 }
-                .help("Eksportuj notatkę jako PDF")
+                .help(settings.t("Eksportuj notatkę jako PDF", "Export note as PDF"))
             }
             ToolbarItem(placement: .automatic) {
                 Button(action: printNote) {
-                    Label("Drukuj", systemImage: "printer")
+                    Label(settings.t("Drukuj", "Print"), systemImage: "printer")
                         .foregroundStyle(accent)
                 }
-                .help("Drukuj notatkę")
+                .help(settings.t("Drukuj notatkę", "Print note"))
             }
 
             // Flexible spacer breaks the glass background into a second cluster
@@ -117,18 +122,20 @@ struct NoteDetailView: View {
             // Right cluster: background toggle + settings (gear far right).
             ToolbarItem(placement: .automatic) {
                 Button { darkBackground.toggle() } label: {
-                    Label(darkBackground ? "Białe tło" : "Czarne tło",
+                    Label(darkBackground ? settings.t("Białe tło", "White background")
+                                         : settings.t("Czarne tło", "Black background"),
                           systemImage: darkBackground ? "sun.max" : "moon")
                         .foregroundStyle(accent)
                 }
-                .help(darkBackground ? "Przełącz na białe tło" : "Przełącz na czarne tło")
+                .help(darkBackground ? settings.t("Przełącz na białe tło", "Switch to white background")
+                                     : settings.t("Przełącz na czarne tło", "Switch to black background"))
             }
             ToolbarItem(placement: .automatic) {
                 Button { openSettings() } label: {
                     Image(systemName: "gear")
                         .foregroundStyle(accent)
                 }
-                .help("Ustawienia")
+                .help(settings.t("Ustawienia", "Settings"))
             }
         }
         .task { load() }
@@ -258,7 +265,7 @@ struct BacklinksPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Linkuje tutaj (\(notes.count))", systemImage: "arrow.turn.up.left")
+            Label(Loc.t("Linkuje tutaj (\(notes.count))", "Links here (\(notes.count))"), systemImage: "arrow.turn.up.left")
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             ForEach(notes) { note in
@@ -308,7 +315,7 @@ struct TagBar: View {
                 ForEach(tags, id: \.self) { tag in
                     TagChip(tag: tag, accent: accent) { onRemove(tag) }
                 }
-                TextField("dodaj tag…", text: $input)
+                TextField(Loc.t("dodaj tag…", "add tag…"), text: $input)
                     .textFieldStyle(.plain)
                     .frame(minWidth: 90)
                     .onSubmit(commit)
@@ -356,7 +363,7 @@ struct TagChip: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(accent.opacity(0.7))
-            .help("Usuń tag")
+            .help(Loc.t("Usuń tag", "Remove tag"))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)

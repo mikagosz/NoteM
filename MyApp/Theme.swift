@@ -71,10 +71,12 @@ struct AppearanceSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Wygląd")
+                Text(settings.t("Wygląd", "Appearance"))
                     .font(.headline)
-                Text("Wybierz motyw kolorystyczny. Kolor akcentu wpływa na przyciski, zaznaczenia i linki "
-                     + "w całej aplikacji. Kolor pojedynczego folderu ustawisz z menu kontekstowego notatki.")
+                Text(settings.t("Wybierz motyw kolorystyczny. Kolor akcentu wpływa na przyciski, zaznaczenia i linki "
+                                + "w całej aplikacji. Kolor pojedynczego folderu ustawisz z menu kontekstowego notatki.",
+                                "Pick a color theme. The accent color affects buttons, selections and links across the "
+                                + "app. Set a single folder's color from the note's context menu."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -90,16 +92,17 @@ struct AppearanceSettingsView: View {
                     .padding(.top, 6)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Widok strony Start")
+                    Text(settings.t("Widok strony Start", "Start page layout"))
                         .font(.callout)
-                    Picker("Widok strony Start", selection: $settings.startLayout) {
+                    Picker(settings.t("Widok strony Start", "Start page layout"), selection: $settings.startLayout) {
                         ForEach(StartLayout.allCases) { layout in
-                            Text(layout.label).tag(layout)
+                            Text(layout.label(settings)).tag(layout)
                         }
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    Text("Sekcje: listy z nagłówkami dat. Kolumny: słupki obok siebie. Stosy: kliknij stos, by zobaczyć notatki z danego okresu.")
+                    Text(settings.t("Sekcje: listy z nagłówkami dat. Kolumny: słupki obok siebie. Stosy: kliknij stos, by zobaczyć notatki z danego okresu.",
+                                    "Sections: lists with date headers. Columns: side-by-side columns. Stacks: click a stack to see that period's notes."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
