@@ -19,6 +19,8 @@ extension NSAttributedString.Key {
     /// attachment came from. Stored on the attachment character so it survives
     /// archiving; used to prune attachment files the user removed from the note.
     static let noteMAttachmentName = NSAttributedString.Key("noteMAttachmentName")
+    /// Marks a paragraph as a block quote (indented + tinted text).
+    static let noteMBlockquote = NSAttributedString.Key("noteMBlockquote")
 }
 
 /// Marker subclass for NoteM's inline image attachments. It renders at its
@@ -43,6 +45,26 @@ enum NoteRichArchive {
     }
 }
 
+/// The set of toggle-style formats active at the caret / selection, so the
+/// toolbar can highlight the buttons that are currently "on".
+struct ActiveFormats: OptionSet {
+    let rawValue: Int
+    static let bold          = ActiveFormats(rawValue: 1 << 0)
+    static let italic        = ActiveFormats(rawValue: 1 << 1)
+    static let underline     = ActiveFormats(rawValue: 1 << 2)
+    static let bulletList     = ActiveFormats(rawValue: 1 << 3)
+    static let numberedList   = ActiveFormats(rawValue: 1 << 4)
+    static let checklist      = ActiveFormats(rawValue: 1 << 5)
+    static let strikethrough  = ActiveFormats(rawValue: 1 << 6)
+    static let dashList       = ActiveFormats(rawValue: 1 << 7)
+    static let blockquote     = ActiveFormats(rawValue: 1 << 8)
+}
+
+/// Predefined paragraph styles offered in the "Aa" style panel.
+enum ParagraphStyleKind: String, CaseIterable {
+    case title, heading, subheading, body, monospaced
+}
+
 /// Drives formatting commands on the underlying `NSTextView` and reports edits
 /// back to SwiftUI. Owned by `NoteDetailView` as `@State` so it survives view
 /// updates; the text view is attached once in `RichTextEditor.makeNSView`.
@@ -54,6 +76,12 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     var titlesProvider: () -> [String] = { [] }
     /// Called when a wiki link is clicked, with the linked note's title.
     var onOpenWikiLink: ((String) -> Void)?
+    /// Called whenever the caret/selection moves, reporting the font size at
+    /// the insertion point so the toolbar's size field can stay in sync.
+    var onFontSizeChange: ((CGFloat) -> Void)?
+    /// Called when the active toggle formats change, so the toolbar can
+    /// highlight the buttons (bold, italic, underline, lists, checklist).
+    var onActiveFormatsChange: ((ActiveFormats) -> Void)?
 
     /// Folder of the currently loaded note; used for resolving attachment paths.
     var noteFolder: URL?
@@ -63,6 +91,9 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     private var storedContent = NSAttributedString()
     private var isSettingText = false
     private var floatingPanel: FloatingFormatPanel?
+
+    /// Marker prefix for dash-style list items.
+    static let dashMarker = "– "
 
     // MARK: - Attaching / content
 
@@ -198,6 +229,8 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     /// Shows / hides the floating format panel whenever the selection changes.
     func textViewDidChangeSelection(_ notification: Notification) {
         guard let textView else { return }
+        onFontSizeChange?(currentFontSize())
+        notifyActiveFormats()
         let sel = textView.selectedRange()
         guard sel.length > 0, textView.window?.isKeyWindow == true else {
             floatingPanel?.hide()
@@ -227,6 +260,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             let current = attrs[.underlineStyle] as? Int ?? 0
             attrs[.underlineStyle] = current == 0 ? NSUnderlineStyle.single.rawValue : 0
             textView.typingAttributes = attrs
+            notifyActiveFormats()
             return
         }
         var allUnderlined = true
@@ -243,6 +277,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         )
         storage.endEditing()
         textView.didChangeText()
+        notifyActiveFormats()
     }
 
     func insertLink() {
@@ -262,6 +297,200 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
     }
 
+    /// Toggles strikethrough on the selection (or the typing attributes).
+    func toggleStrikethrough() {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            let current = attrs[.strikethroughStyle] as? Int ?? 0
+            attrs[.strikethroughStyle] = current == 0 ? NSUnderlineStyle.single.rawValue : 0
+            textView.typingAttributes = attrs
+            notifyActiveFormats()
+            return
+        }
+        var allStruck = true
+        storage.enumerateAttribute(.strikethroughStyle, in: range) { value, _, _ in
+            if (value as? Int ?? 0) == 0 { allStruck = false }
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.addAttribute(
+            .strikethroughStyle,
+            value: allStruck ? 0 : NSUnderlineStyle.single.rawValue,
+            range: range
+        )
+        storage.endEditing()
+        textView.didChangeText()
+        notifyActiveFormats()
+    }
+
+    /// Sets the text colour of the selection (or of the next typed characters).
+    func setTextColor(_ color: NSColor) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            attrs[.foregroundColor] = color
+            textView.typingAttributes = attrs
+            return
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.addAttribute(.foregroundColor, value: color, range: range)
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
+    /// Toggles a highlight (text background colour) on the selection. Passing the
+    /// same colour that's already there clears it.
+    func toggleHighlight(_ color: NSColor) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            let has = attrs[.backgroundColor] != nil
+            if has { attrs[.backgroundColor] = nil } else { attrs[.backgroundColor] = color }
+            textView.typingAttributes = attrs
+            return
+        }
+        var allHighlighted = true
+        storage.enumerateAttribute(.backgroundColor, in: range) { value, _, _ in
+            if value == nil { allHighlighted = false }
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        if allHighlighted {
+            storage.removeAttribute(.backgroundColor, range: range)
+        } else {
+            storage.addAttribute(.backgroundColor, value: color, range: range)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
+    // MARK: - Paragraph styles
+
+    /// Applies one of the predefined paragraph styles (title / heading /
+    /// subheading / body / monospaced) to the current paragraph(s).
+    func setParagraphStyle(_ kind: ParagraphStyleKind) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let font: NSFont
+        let headerLevel: Int?
+        switch kind {
+        case .title:      font = MarkdownStyler.headerFont(1); headerLevel = 1
+        case .heading:    font = MarkdownStyler.headerFont(2); headerLevel = 2
+        case .subheading: font = MarkdownStyler.headerFont(3); headerLevel = 3
+        case .body:       font = MarkdownStyler.bodyFont;      headerLevel = nil
+        case .monospaced: font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular); headerLevel = nil
+        }
+
+        let range = textView.selectedRange()
+
+        // No selection: steer typing attributes so the next typed text uses the
+        // style (until the user picks another style / turns it off).
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            attrs[.font] = font
+            if let headerLevel { attrs[.headerLevel] = headerLevel } else { attrs[.headerLevel] = nil }
+            attrs[.foregroundColor] = NSColor.labelColor
+            textView.typingAttributes = attrs
+            notifyActiveFormats()
+            return
+        }
+
+        // Selection: apply the style to exactly the selected characters.
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.removeAttribute(.listKind, range: range)
+        if let headerLevel {
+            storage.addAttribute(.headerLevel, value: headerLevel, range: range)
+        } else {
+            storage.removeAttribute(.headerLevel, range: range)
+        }
+        storage.addAttribute(.font, value: font, range: range)
+        storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        storage.endEditing()
+        textView.didChangeText()
+        notifyActiveFormats()
+    }
+
+    /// The style at the caret / start of the selection, for highlighting the panel.
+    func currentParagraphStyle() -> ParagraphStyleKind {
+        guard let textView, let storage = textView.textStorage else { return .body }
+        let range = textView.selectedRange()
+        let level: Int?
+        let font: NSFont?
+        if range.length == 0, range.location >= storage.length {
+            // Caret past the last character: consult the typing attributes.
+            level = textView.typingAttributes[.headerLevel] as? Int
+            font  = textView.typingAttributes[.font] as? NSFont
+        } else {
+            level = storage.attribute(.headerLevel, at: range.location, effectiveRange: nil) as? Int
+            font  = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+        }
+        if let level { return level == 1 ? .title : level == 2 ? .heading : .subheading }
+        if font?.fontDescriptor.symbolicTraits.contains(.monoSpace) == true { return .monospaced }
+        return .body
+    }
+
+    // MARK: - Indent & block quote
+
+    /// Increases (+) or decreases (−) the indentation of the current paragraph(s).
+    func changeIndent(by delta: CGFloat) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let paragraphRange = (storage.string as NSString).paragraphRange(for: textView.selectedRange())
+        guard paragraphRange.length > 0,
+              textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.enumerateAttribute(.paragraphStyle, in: paragraphRange) { value, subrange, _ in
+            let base = (value as? NSParagraphStyle) ?? .default
+            let mutable = base.mutableCopy() as! NSMutableParagraphStyle
+            let newFirst = max(0, mutable.firstLineHeadIndent + delta)
+            let newHead  = max(0, mutable.headIndent + delta)
+            mutable.firstLineHeadIndent = newFirst
+            mutable.headIndent = newHead
+            storage.addAttribute(.paragraphStyle, value: mutable, range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
+    /// Toggles a block quote on the current paragraph(s): indented, tinted,
+    /// italic text tagged with `.noteMBlockquote`.
+    func toggleBlockquote() {
+        guard let textView, let storage = textView.textStorage else { return }
+        let paragraphRange = (storage.string as NSString).paragraphRange(for: textView.selectedRange())
+        guard paragraphRange.length > 0,
+              textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
+        let isQuote = storage.attribute(.noteMBlockquote, at: paragraphRange.location, effectiveRange: nil) != nil
+        let fontManager = NSFontManager.shared
+        storage.beginEditing()
+        if isQuote {
+            storage.removeAttribute(.noteMBlockquote, range: paragraphRange)
+            storage.addAttribute(.paragraphStyle, value: NSParagraphStyle.default, range: paragraphRange)
+            storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: paragraphRange)
+            storage.enumerateAttribute(.font, in: paragraphRange) { value, subrange, _ in
+                let font = value as? NSFont ?? MarkdownStyler.bodyFont
+                storage.addAttribute(.font, value: fontManager.convert(font, toNotHaveTrait: .italicFontMask), range: subrange)
+            }
+        } else {
+            let quoteStyle = NSMutableParagraphStyle()
+            quoteStyle.firstLineHeadIndent = 20
+            quoteStyle.headIndent = 20
+            storage.addAttribute(.noteMBlockquote, value: true, range: paragraphRange)
+            storage.addAttribute(.paragraphStyle, value: quoteStyle, range: paragraphRange)
+            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: paragraphRange)
+            storage.enumerateAttribute(.font, in: paragraphRange) { value, subrange, _ in
+                let font = value as? NSFont ?? MarkdownStyler.bodyFont
+                storage.addAttribute(.font, value: fontManager.convert(font, toHaveTrait: .italicFontMask), range: subrange)
+            }
+        }
+        storage.endEditing()
+        textView.didChangeText()
+        notifyActiveFormats()
+    }
+
     private func toggleTrait(_ mask: NSFontTraitMask, symbolic: NSFontDescriptor.SymbolicTraits) {
         guard let textView, let storage = textView.textStorage else { return }
         let range = textView.selectedRange()
@@ -276,6 +505,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
                 ? fontManager.convert(font, toNotHaveTrait: mask)
                 : fontManager.convert(font, toHaveTrait: mask)
             textView.typingAttributes = attrs
+            notifyActiveFormats()
             return
         }
 
@@ -297,6 +527,106 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
         storage.endEditing()
         textView.didChangeText()
+        notifyActiveFormats()
+    }
+
+    // MARK: - Font size
+
+    /// The point size of the font at the current caret / start of the selection.
+    func currentFontSize() -> CGFloat {
+        guard let textView else { return MarkdownStyler.bodyFont.pointSize }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            let font = textView.typingAttributes[.font] as? NSFont ?? MarkdownStyler.bodyFont
+            return font.pointSize
+        }
+        guard let storage = textView.textStorage, range.location < storage.length else {
+            return MarkdownStyler.bodyFont.pointSize
+        }
+        let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            ?? MarkdownStyler.bodyFont
+        return font.pointSize
+    }
+
+    /// Resizes the selected text to `size` points (keeping bold/italic traits);
+    /// with no selection it steers the typing attributes for the next keystrokes.
+    func setFontSize(_ size: CGFloat) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let clamped = max(4, min(400, size))
+        let fontManager = NSFontManager.shared
+        let range = textView.selectedRange()
+
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            let font = attrs[.font] as? NSFont ?? MarkdownStyler.bodyFont
+            attrs[.font] = fontManager.convert(font, toSize: clamped)
+            textView.typingAttributes = attrs
+            onFontSizeChange?(clamped)
+            return
+        }
+
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            let font = value as? NSFont ?? MarkdownStyler.bodyFont
+            storage.addAttribute(.font, value: fontManager.convert(font, toSize: clamped), range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+        onFontSizeChange?(clamped)
+    }
+
+    // MARK: - Active formats (toolbar highlight)
+
+    private func notifyActiveFormats() {
+        onActiveFormatsChange?(currentActiveFormats())
+    }
+
+    /// The toggle-style formats active at the caret / start of the selection.
+    func currentActiveFormats() -> ActiveFormats {
+        guard let textView, let storage = textView.textStorage else { return [] }
+        var result: ActiveFormats = []
+        let range = textView.selectedRange()
+
+        // Inline traits (bold / italic / underline / strikethrough).
+        let font: NSFont
+        let underline: Int
+        let strike: Int
+        if range.length == 0 {
+            font = textView.typingAttributes[.font] as? NSFont ?? MarkdownStyler.bodyFont
+            underline = textView.typingAttributes[.underlineStyle] as? Int ?? 0
+            strike = textView.typingAttributes[.strikethroughStyle] as? Int ?? 0
+        } else if range.location < storage.length {
+            font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? MarkdownStyler.bodyFont
+            underline = storage.attribute(.underlineStyle, at: range.location, effectiveRange: nil) as? Int ?? 0
+            strike = storage.attribute(.strikethroughStyle, at: range.location, effectiveRange: nil) as? Int ?? 0
+        } else {
+            font = MarkdownStyler.bodyFont
+            underline = 0
+            strike = 0
+        }
+        let traits = font.fontDescriptor.symbolicTraits
+        if traits.contains(.bold)   { result.insert(.bold) }
+        if traits.contains(.italic) { result.insert(.italic) }
+        if underline != 0           { result.insert(.underline) }
+        if strike != 0              { result.insert(.strikethrough) }
+
+        // Paragraph-level (checklist / list kind / block quote).
+        if storage.length > 0 {
+            let paraLoc = (storage.string as NSString).paragraphRange(for: range).location
+            let idx = min(paraLoc, storage.length - 1)
+            if storage.attribute(.noteMBlockquote, at: idx, effectiveRange: nil) != nil {
+                result.insert(.blockquote)
+            }
+            if storage.attribute(.checklist, at: idx, effectiveRange: nil) != nil {
+                result.insert(.checklist)
+            } else if let kind = storage.attribute(.listKind, at: idx, effectiveRange: nil) as? String {
+                if kind == "bullet"  { result.insert(.bulletList) }
+                if kind == "ordered" { result.insert(.numberedList) }
+                if kind == "dash"    { result.insert(.dashList) }
+            }
+        }
+        return result
     }
 
     // MARK: - Headers
@@ -364,6 +694,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
         storage.replaceCharacters(in: paragraphRange, with: rebuilt)
         textView.didChangeText()
+        notifyActiveFormats()
     }
 
     // MARK: - Checklists
@@ -395,6 +726,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
         storage.replaceCharacters(in: paragraphRange, with: rebuilt)
         textView.didChangeText()
+        notifyActiveFormats()
     }
 
     // MARK: - Table
@@ -465,7 +797,12 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             return
         }
 
-        let marker = kind == "bullet" ? MarkdownStyler.bulletMarker : "\(orderedNumber). "
+        let marker: String
+        switch kind {
+        case "bullet":  marker = MarkdownStyler.bulletMarker
+        case "dash":    marker = RichTextController.dashMarker
+        default:        marker = "\(orderedNumber). "
+        }
         if kind == "ordered" { orderedNumber += 1 }
         line.insert(NSAttributedString(string: marker, attributes: MarkdownStyler.defaultTypingAttributes), at: 0)
         line.addAttribute(.listKind, value: kind, range: full())
@@ -486,6 +823,10 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
         if text.hasPrefix(MarkdownStyler.bulletMarker) {
             line.deleteCharacters(in: NSRange(location: 0, length: (MarkdownStyler.bulletMarker as NSString).length))
+            return
+        }
+        if text.hasPrefix(RichTextController.dashMarker) {
+            line.deleteCharacters(in: NSRange(location: 0, length: (RichTextController.dashMarker as NSString).length))
             return
         }
         // Leading "<digits>. "
