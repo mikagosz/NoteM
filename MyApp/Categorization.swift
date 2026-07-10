@@ -118,6 +118,15 @@ final class AppSettings {
         didSet { persistSmartFolders() }
     }
 
+    /// Highlight misspelled words (Polish dictionary) while typing.
+    var spellCheckEnabled: Bool {
+        didSet { defaults.set(spellCheckEnabled, forKey: Self.spellCheckKey) }
+    }
+    /// Automatically correct misspelled words as you type.
+    var autocorrectEnabled: Bool {
+        didSet { defaults.set(autocorrectEnabled, forKey: Self.autocorrectKey) }
+    }
+
     private let defaults: UserDefaults
     private static let rulesKey = "categoryRules"
     private static let qcEnabledKey = "quickCaptureEnabled"
@@ -128,6 +137,8 @@ final class AppSettings {
     private static let themeKey = "themeID"
     private static let startLayoutKey = "startLayout"
     private static let smartFoldersKey = "smartFolders"
+    static let spellCheckKey = "spellCheckEnabled"
+    static let autocorrectKey = "autocorrectEnabled"
 
     /// All smart folders: predefined first, then user-created.
     var allSmartFolders: [SmartFolder] {
@@ -162,6 +173,9 @@ final class AppSettings {
         } else {
             self.smartFolders = []
         }
+        // Spell checking on by default; auto-correct off (opt-in).
+        self.spellCheckEnabled = defaults.object(forKey: Self.spellCheckKey) as? Bool ?? true
+        self.autocorrectEnabled = defaults.bool(forKey: Self.autocorrectKey)
     }
 
     func addRule() {

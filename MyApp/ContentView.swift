@@ -182,7 +182,7 @@ struct SettingsView: View {
         } detail: {
             Group {
                 switch pane ?? .appearance {
-                case .general:        GeneralSettingsView()
+                case .general:        GeneralSettingsView(settings: settings)
                 case .appearance:     AppearanceSettingsView(settings: settings)
                 case .categorization: RulesSettingsView(settings: settings)
                 case .smartFolders:   SmartFoldersSettingsView(settings: settings)
@@ -229,15 +229,85 @@ private enum SettingsPane: String, Hashable, CaseIterable {
 }
 
 private struct GeneralSettingsView: View {
+    @Bindable var settings: AppSettings
+
+    /// One keyboard shortcut row.
+    private struct Shortcut: Identifiable {
+        let keys: String
+        let title: String
+        var id: String { keys + title }
+    }
+
+    private struct Group: Identifiable {
+        let name: String
+        let shortcuts: [Shortcut]
+        var id: String { name }
+    }
+
+    private let groups: [Group] = [
+        Group(name: "Formatowanie", shortcuts: [
+            Shortcut(keys: "⌘B", title: "Pogrubienie"),
+            Shortcut(keys: "⌘I", title: "Kursywa"),
+            Shortcut(keys: "⌘1", title: "Nagłówek 1"),
+            Shortcut(keys: "⌘2", title: "Nagłówek 2"),
+            Shortcut(keys: "⌘3", title: "Nagłówek 3"),
+            Shortcut(keys: "⌘⇧L", title: "Lista zadań (checklista)")
+        ]),
+        Group(name: "Notatka", shortcuts: [
+            Shortcut(keys: "⌘F", title: "Szukaj w notatce"),
+            Shortcut(keys: "⌘Z", title: "Cofnij"),
+            Shortcut(keys: "⌘⇧Z", title: "Ponów"),
+            Shortcut(keys: "⌘C", title: "Kopiuj (także zaznaczoną grafikę)"),
+            Shortcut(keys: "⌘X", title: "Wytnij (także zaznaczoną grafikę)"),
+            Shortcut(keys: "⌘V", title: "Wklej")
+        ]),
+        Group(name: "Grafika", shortcuts: [
+            Shortcut(keys: "⌘O", title: "Dopasuj zaznaczoną grafikę do szerokości okna")
+        ])
+    ]
+
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "note.text")
-                .font(.system(size: 48))
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Pisownia")
+                .font(.headline)
+            Toggle("Sprawdzanie pisowni (słownik polski — podkreśla błędy)",
+                   isOn: $settings.spellCheckEnabled)
+            Toggle("Automatyczna korekta (poprawia błędy podczas pisania)",
+                   isOn: $settings.autocorrectEnabled)
+                .disabled(!settings.spellCheckEnabled)
+            Text("Działa w notatniku i w szybkiej notatce.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("NoteM").font(.largeTitle.bold())
-            Text("Notatki na każdą okazję").foregroundStyle(.secondary)
+
+            Divider().padding(.vertical, 4)
+
+            Text("Skróty klawiszowe")
+                .font(.headline)
+            Text("Skróty działają w edytorze notatki oraz w szybkiej notatce.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            List {
+                ForEach(groups) { group in
+                    Section(group.name) {
+                        ForEach(group.shortcuts) { shortcut in
+                            HStack(spacing: 12) {
+                                Text(shortcut.keys)
+                                    .font(.system(.body, design: .monospaced))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
+                                    .frame(minWidth: 56, alignment: .center)
+                                Text(shortcut.title)
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -642,7 +712,18 @@ struct ContentView: View {
                     ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
                 }
             case .none:
-                ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
+                if noteFilter != nil {
+                    FilteredNotesView(
+                        title: activeFilterLabel ?? "Notatki",
+                        notes: filteredNotes,
+                        model: model,
+                        accent: settings.theme.accent
+                    ) { id in
+                        selection = .note(id)
+                    }
+                } else {
+                    ContentUnavailableView("Wybierz notatkę", systemImage: "note.text")
+                }
             }
             }
             // Settings gear at the far right — only when no note is open, since
@@ -714,6 +795,48 @@ struct NoteRow: View {
                 .fill(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
         )
         .contentShape(Rectangle())
+    }
+}
+
+/// Main-window gallery of the notes matching the active sidebar filter (a smart
+/// folder like "Dzisiejsze", a physical folder, or a tag). Clicking a card opens
+/// the note. Shown when a filter is active but no single note is selected.
+struct FilteredNotesView: View {
+    let title: String
+    let notes: [Note]
+    let model: NotesModel
+    var accent: Color = .accentColor
+    let openNote: (UUID) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 220), spacing: 14)]
+
+    var body: some View {
+        Group {
+            if notes.isEmpty {
+                ContentUnavailableView(
+                    "Brak notatek",
+                    systemImage: "folder",
+                    description: Text("Nie ma tu jeszcze żadnych notatek.")
+                )
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(notes) { note in
+                            NoteCard(
+                                note: note,
+                                accent: accent,
+                                coverColor: AppTheme.color(id: model.categoryColorID(of: note))
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture { openNote(note.id) }
+                        }
+                    }
+                    .padding(16)
+                    .thinScrollers()
+                }
+            }
+        }
+        .navigationTitle(title)
     }
 }
 
