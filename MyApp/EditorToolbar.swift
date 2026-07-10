@@ -91,6 +91,8 @@ struct FormatBar: View {
     let controller: RichTextController
     /// App theme accent colour, used for the active-button highlight.
     var accent: Color = .accentColor
+    /// Opens the drawing editor (wired from the note view).
+    var onOpenDrawing: () -> Void = {}
 
     /// Toggle formats active at the caret, so the matching buttons light up.
     @State private var active: ActiveFormats = []
@@ -145,7 +147,7 @@ struct FormatBar: View {
             // Attachments & pen
             group {
                 fmtBtn("paperclip", label: Loc.t("Dodaj załącznik", "Add attachment"), action: { controller.addAttachmentFromPanel() })
-                fmtBtn("pencil.tip.crop.circle", label: Loc.t("Rysowanie / narzędzia", "Drawing / tools"), action: {})
+                fmtBtn("pencil.tip.crop.circle", label: Loc.t("Rysowanie", "Drawing"), action: onOpenDrawing)
             }
         }
         .padding(.horizontal, 8)
