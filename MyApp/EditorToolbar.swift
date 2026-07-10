@@ -102,6 +102,8 @@ struct FormatBar: View {
     @State private var fontFamily: String = ""
     /// Whether the "Aa" style panel is shown one row above the main capsule.
     @State private var showStyle = false
+    /// Whether the table-size grid picker popover is shown.
+    @State private var showTable = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -168,7 +170,7 @@ struct FormatBar: View {
             divider()
             // Insert
             group {
-                fmtBtn("tablecells",                             label: Loc.t("Tabela", "Table"),    action: controller.insertTable)
+                tableButton
                 fmtBtn("chevron.left.forwardslash.chevron.right", label: Loc.t("Kod", "Code"),      action: controller.insertInlineCode)
                 fmtBtn("link",                                   label: Loc.t("Link", "Link"),      action: { controller.insertLink() })
             }
@@ -201,6 +203,22 @@ struct FormatBar: View {
         }
         .buttonStyle(.plain)
         .help(Loc.t("Style tekstu", "Text styles"))
+    }
+
+    private var tableButton: some View {
+        Button { showTable = true } label: {
+            Image(systemName: "tablecells")
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(Loc.t("Tabela", "Table"))
+        .popover(isPresented: $showTable, arrowEdge: .top) {
+            TableGridPicker { rows, cols in
+                controller.insertTable(rows: rows, columns: cols)
+                showTable = false
+            }
+        }
     }
 
     private func group<V: View>(@ViewBuilder _ content: () -> V) -> some View {
@@ -323,6 +341,61 @@ private struct StyleCapsule: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+}
+
+// MARK: - Table size grid picker
+
+/// A Word-style grid: hover to pick columns×rows, click to insert the table.
+private struct TableGridPicker: View {
+    let onPick: (_ rows: Int, _ cols: Int) -> Void
+
+    @State private var rows = 0
+    @State private var cols = 0
+    @State private var manualCols = 3
+    @State private var manualRows = 3
+    private let maxRows = 8
+    private let maxCols = 8
+    private let cell: CGFloat = 16
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(rows > 0 ? "\(cols)×\(rows) — \(Loc.t("tabela", "table"))"
+                          : Loc.t("Tabela", "Table"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                ForEach(1...maxRows, id: \.self) { r in
+                    HStack(spacing: 2) {
+                        ForEach(1...maxCols, id: \.self) { c in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill((r <= rows && c <= cols) ? Color.accentColor.opacity(0.35)
+                                                               : Color.gray.opacity(0.15))
+                                .overlay(RoundedRectangle(cornerRadius: 2).stroke(.quaternary, lineWidth: 0.5))
+                                .frame(width: cell, height: cell)
+                                .onHover { if $0 { rows = r; cols = c } }
+                                .onTapGesture { onPick(r, c) }
+                        }
+                    }
+                }
+            }
+            Divider()
+            // Manual entry: columns × rows, with the insert button underneath.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    TextField("", value: $manualCols, format: .number)
+                        .frame(width: 40).textFieldStyle(.roundedBorder)
+                    Text("×").foregroundStyle(.secondary)
+                    TextField("", value: $manualRows, format: .number)
+                        .frame(width: 40).textFieldStyle(.roundedBorder)
+                }
+                Button(Loc.t("Wstaw tabelę…", "Insert table…")) {
+                    onPick(max(1, manualRows), max(1, manualCols))
+                }
+            }
+            .font(.caption)
+        }
+        .padding(12)
     }
 }
 
