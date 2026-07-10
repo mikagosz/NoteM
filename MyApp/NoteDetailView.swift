@@ -24,6 +24,8 @@ struct NoteDetailView: View {
     @State private var dirty = false
     /// Black vs white note background; remembered across notes and launches.
     @AppStorage("noteDarkBackground") private var darkBackground = true
+    /// Whether the drawing editor sheet is showing.
+    @State private var showDrawing = false
     /// Opens the Settings window (gear lives in the right toolbar cluster).
     @Environment(\.openSettings) private var openSettings
 
@@ -35,14 +37,17 @@ struct NoteDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TagBar(
-                tags: note.tags,
-                suggestions: model.tagCounts.map(\.tag),
-                accent: accent,
-                onAdd: { model.setTags(note.tags + [$0], for: note) },
-                onRemove: { tag in model.setTags(note.tags.filter { $0 != tag }, for: note) }
-            )
-            Divider()
+            // Hide the tag bar while drawing so the drawing controls don't overlap it.
+            if !showDrawing {
+                TagBar(
+                    tags: note.tags,
+                    suggestions: model.tagCounts.map(\.tag),
+                    accent: accent,
+                    onAdd: { model.setTags(note.tags + [$0], for: note) },
+                    onRemove: { tag in model.setTags(note.tags.filter { $0 != tag }, for: note) }
+                )
+                Divider()
+            }
             RichTextEditor(controller: controller, darkBackground: darkBackground)
 
             let backlinks = model.backlinks(to: note)
@@ -53,7 +58,21 @@ struct NoteDetailView: View {
         }
         // Float the tool capsule over the editor — no reserved bottom bar.
         .overlay(alignment: .bottom) {
-            FormatBar(controller: controller, accent: accent)
+            // Hide the note's format capsule while drawing (the drawing bar takes over).
+            if !showDrawing {
+                FormatBar(controller: controller, accent: accent, onOpenDrawing: { showDrawing = true })
+            }
+        }
+        .overlay {
+            if showDrawing {
+                DrawingEditorView { url in
+                    showDrawing = false
+                    guard let url, let textView = controller.textView as? NoteTextView else { return }
+                    textView.window?.makeFirstResponder(textView)
+                    textView.insertAttachments(from: [url])
+                }
+                .transition(.opacity)
+            }
         }
         .navigationTitle(note.title)
         .toolbar {
