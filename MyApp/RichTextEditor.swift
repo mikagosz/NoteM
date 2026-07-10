@@ -425,17 +425,57 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func insertLink() {
         guard let textView, let storage = textView.textStorage else { return }
         let range = textView.selectedRange()
-        let selectedText = range.length > 0 ? (storage.string as NSString).substring(with: range) : "link"
-        let template = "[\(selectedText)](url)"
-        let str = NSAttributedString(string: template, attributes: MarkdownStyler.defaultTypingAttributes)
-        guard textView.shouldChangeText(in: range, replacementString: template) else { return }
-        storage.replaceCharacters(in: range, with: str)
-        textView.didChangeText()
-        // Select the "url" part so user can immediately type the address.
-        let urlStart = range.location + selectedText.count + 3
-        let urlLen = 3
-        if urlStart + urlLen <= storage.length {
-            textView.setSelectedRange(NSRange(location: urlStart, length: urlLen))
+
+        // Ask for the URL in a small dialog (prefilled from the clipboard if it
+        // already holds a URL).
+        let alert = NSAlert()
+        alert.messageText = Loc.t("Wstaw link", "Insert link")
+        alert.informativeText = Loc.t("Wklej adres URL", "Paste the URL")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.placeholderString = "https://…"
+        field.usesSingleLineMode = true
+        // Disable the URL autocompletion list — its Safari helper popover conflicts
+        // with the alert panel and crashes (NSRemoteView assertion).
+        field.isAutomaticTextCompletionEnabled = false
+        if let clip = NSPasteboard.general.string(forType: .string),
+           clip.hasPrefix("http://") || clip.hasPrefix("https://") {
+            field.stringValue = clip
+        }
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: Loc.t("Anuluj", "Cancel"))
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        var urlString = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !urlString.isEmpty else { return }
+        if !urlString.contains("://") { urlString = "https://" + urlString }
+        guard let url = URL(string: urlString) else { return }
+
+        let linkAttrs: [NSAttributedString.Key: Any] = [
+            .link: url,
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+
+        if range.length > 0 {
+            // Attach the link to the selected text.
+            guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+            storage.beginEditing()
+            storage.addAttributes(linkAttrs, range: range)
+            storage.endEditing()
+            textView.didChangeText()
+        } else {
+            // No selection: insert the URL itself as a clickable link.
+            var attrs = linkAttrs
+            attrs[.font] = MarkdownStyler.bodyFont
+            let linkStr = NSAttributedString(string: urlString, attributes: attrs)
+            guard textView.shouldChangeText(in: range, replacementString: urlString) else { return }
+            storage.replaceCharacters(in: range, with: linkStr)
+            textView.didChangeText()
+            // Reset typing attributes so text after the link isn't a link.
+            textView.setSelectedRange(NSRange(location: range.location + linkStr.length, length: 0))
+            textView.typingAttributes = MarkdownStyler.defaultTypingAttributes
         }
     }
 
@@ -926,15 +966,46 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
     // MARK: - Table
 
-    func insertTable() {
-        let template = Loc.t("| Kolumna 1 | Kolumna 2 | Kolumna 3 |", "| Column 1 | Column 2 | Column 3 |")
-            + "\n|-----------|-----------|----------|\n|           |           |          |"
-        let attrs = MarkdownStyler.defaultTypingAttributes
-        let str = NSAttributedString(string: template, attributes: attrs)
-        guard let textView else { return }
+    func insertTable() { insertTable(rows: 3, columns: 3) }
+
+    /// Inserts a real, bordered `NSTextTable` with the given number of rows
+    /// (including the header row) and columns — aligned cells you can type into.
+    func insertTable(rows: Int, columns: Int) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let cols = max(1, columns)
+        let rws = max(1, rows)
+
+        let table = NSTextTable()
+        table.numberOfColumns = cols
+        table.collapsesBorders = true
+        table.hidesEmptyCells = false
+
+        let result = NSMutableAttributedString()
+        for r in 0..<rws {
+            for c in 0..<cols {
+                let block = NSTextTableBlock(table: table, startingRow: r, rowSpan: 1,
+                                             startingColumn: c, columnSpan: 1)
+                block.setBorderColor(.separatorColor)
+                block.setWidth(1, type: .absoluteValueType, for: .border)
+                block.setWidth(5, type: .absoluteValueType, for: .padding)
+                block.setValue(110, type: .absoluteValueType, for: .width)
+
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.textBlocks = [block]
+                let font = r == 0 ? NSFont.boldSystemFont(ofSize: 14) : MarkdownStyler.bodyFont
+                result.append(NSAttributedString(string: "\u{00A0}\n", attributes: [
+                    .paragraphStyle: paragraph,
+                    .font: font,
+                    .foregroundColor: NSColor.labelColor
+                ]))
+            }
+        }
+        // A trailing plain paragraph so the caret can continue below the table.
+        result.append(NSAttributedString(string: "\n", attributes: MarkdownStyler.defaultTypingAttributes))
+
         let range = textView.selectedRange()
-        guard textView.shouldChangeText(in: range, replacementString: template) else { return }
-        textView.textStorage?.replaceCharacters(in: range, with: str)
+        guard textView.shouldChangeText(in: range, replacementString: result.string) else { return }
+        storage.replaceCharacters(in: range, with: result)
         textView.didChangeText()
         textView.setSelectedRange(NSRange(location: range.location, length: 0))
     }
