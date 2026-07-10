@@ -72,11 +72,13 @@ enum MarkdownStyler {
         [.font: bodyFont, .foregroundColor: NSColor.labelColor]
     }
 
-    /// Paragraph style for list items (hanging indent so wrapped lines align).
+    /// Paragraph style for list items: the whole list steps in from the left
+    /// edge (firstLineHeadIndent), with a hanging indent so wrapped lines align
+    /// under the text rather than under the marker.
     static let listParagraphStyle: NSParagraphStyle = {
         let p = NSMutableParagraphStyle()
-        p.headIndent = 18
-        p.firstLineHeadIndent = 0
+        p.firstLineHeadIndent = 24
+        p.headIndent = 42
         return p
     }()
 
