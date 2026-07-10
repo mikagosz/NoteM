@@ -91,43 +91,45 @@ struct FormatBar: View {
     let controller: RichTextController
 
     var body: some View {
-        VStack(spacing: 0) {
-            Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    // Text style
-                    group {
-                        fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"),  action: controller.toggleBold)
-                        fmtBtn("italic", label: Loc.t("Kursywa", "Italic"),      action: controller.toggleItalic)
-                        fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), action: { controller.toggleUnderline() })
-                    }
-                    divider()
-                    // Headers
-                    group {
-                        headerBtn("H1", action: { controller.toggleHeader(1) })
-                        headerBtn("H2", action: { controller.toggleHeader(2) })
-                        headerBtn("H3", action: { controller.toggleHeader(3) })
-                    }
-                    divider()
-                    // Lists
-                    group {
-                        fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), action: { controller.toggleList("bullet") })
-                        fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), action: { controller.toggleList("ordered") })
-                        fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"),        action: controller.toggleChecklist)
-                    }
-                    divider()
-                    // Insert
-                    group {
-                        fmtBtn("tablecells",                             label: Loc.t("Tabela", "Table"),    action: controller.insertTable)
-                        fmtBtn("chevron.left.forwardslash.chevron.right", label: Loc.t("Kod", "Code"),      action: controller.insertInlineCode)
-                        fmtBtn("link",                                   label: Loc.t("Link", "Link"),      action: { controller.insertLink() })
-                    }
-                }
-                .padding(.horizontal, 8)
+        // Floating rounded "capsule" of tools (like the top toolbar / the panel
+        // above a selection), rather than a full-width bar.
+        HStack(spacing: 0) {
+            // Text style
+            group {
+                fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"),  action: controller.toggleBold)
+                fmtBtn("italic", label: Loc.t("Kursywa", "Italic"),      action: controller.toggleItalic)
+                fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), action: { controller.toggleUnderline() })
             }
-            .frame(height: 40)
-            .background(.bar)
+            divider()
+            // Headers
+            group {
+                headerBtn("H1", action: { controller.toggleHeader(1) })
+                headerBtn("H2", action: { controller.toggleHeader(2) })
+                headerBtn("H3", action: { controller.toggleHeader(3) })
+            }
+            divider()
+            // Lists
+            group {
+                fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), action: { controller.toggleList("bullet") })
+                fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), action: { controller.toggleList("ordered") })
+                fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"),        action: controller.toggleChecklist)
+            }
+            divider()
+            // Insert
+            group {
+                fmtBtn("tablecells",                             label: Loc.t("Tabela", "Table"),    action: controller.insertTable)
+                fmtBtn("chevron.left.forwardslash.chevron.right", label: Loc.t("Kod", "Code"),      action: controller.insertInlineCode)
+                fmtBtn("link",                                   label: Loc.t("Link", "Link"),      action: { controller.insertLink() })
+            }
         }
+        .padding(.horizontal, 8)
+        .frame(height: 38)
+        .fixedSize()
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.quaternary, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity)   // centre the capsule horizontally
     }
 
     private func group<V: View>(@ViewBuilder _ content: () -> V) -> some View {

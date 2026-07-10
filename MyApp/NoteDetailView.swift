@@ -51,7 +51,8 @@ struct NoteDetailView: View {
                 BacklinksPanel(notes: backlinks, onOpen: openNote)
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // Float the tool capsule over the editor — no reserved bottom bar.
+        .overlay(alignment: .bottom) {
             FormatBar(controller: controller)
         }
         .navigationTitle(note.title)
