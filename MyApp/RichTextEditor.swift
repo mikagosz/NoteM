@@ -137,6 +137,20 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         textView.performTextFinderAction(item)
     }
 
+    /// Opens a file picker and inserts the chosen file(s) as attachments.
+    func addAttachmentFromPanel() {
+        guard let textView = textView as? NoteTextView else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.begin { response in
+            guard response == .OK else { return }
+            textView.window?.makeFirstResponder(textView)
+            textView.insertAttachments(from: panel.urls)
+        }
+    }
+
     /// Sets the editor content (e.g. when a note loads).
     func setContent(_ content: NSAttributedString) {
         storedContent = content
@@ -245,6 +259,134 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         guard let url = link as? URL, let title = MarkdownStyler.wikiTitle(from: url) else { return false }
         onOpenWikiLink?(title)
         return true
+    }
+
+    // MARK: - List continuation on Return
+
+    /// Intercepts Return so that lists keep going: pressing it inside a list item
+    /// starts the next item (next number / bullet / dash / checkbox); pressing it
+    /// on an empty item ends the list and drops back to a plain paragraph.
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+              let storage = textView.textStorage else { return false }
+
+        let sel = textView.selectedRange()
+        let ns = storage.string as NSString
+        let paraRange = ns.paragraphRange(for: sel)
+        guard paraRange.location < storage.length else { return false }
+
+        // What kind of list (if any) is the current paragraph?
+        let isChecklist = storage.attribute(.checklist, at: paraRange.location, effectiveRange: nil) != nil
+        let listKind = storage.attribute(.listKind, at: paraRange.location, effectiveRange: nil) as? String
+        guard isChecklist || listKind != nil else { return false }
+
+        // The current line's text (without its trailing newline).
+        var lineRange = paraRange
+        if lineRange.length > 0, ns.character(at: lineRange.location + lineRange.length - 1) == 10 {
+            lineRange.length -= 1
+        }
+        let lineText = ns.substring(with: lineRange)
+        let content = listItemContent(lineText, isChecklist: isChecklist, kind: listKind)
+
+        // Empty item + Return → end the list (plain paragraph).
+        if content.isEmpty {
+            guard textView.shouldChangeText(in: lineRange, replacementString: "") else { return true }
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: lineRange,
+                with: NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
+            )
+            storage.endEditing()
+            textView.didChangeText()
+            textView.typingAttributes = MarkdownStyler.defaultTypingAttributes
+            textView.setSelectedRange(NSRange(location: lineRange.location, length: 0))
+            notifyActiveFormats()
+            return true
+        }
+
+        // Otherwise → start the next item on a new line.
+        let newItem = NSMutableAttributedString(string: "\n", attributes: MarkdownStyler.defaultTypingAttributes)
+        if isChecklist {
+            newItem.append(MarkdownStyler.checkboxAttachmentString(checked: false))
+            newItem.append(NSAttributedString(string: " ", attributes: MarkdownStyler.defaultTypingAttributes))
+        } else if listKind == "ordered" {
+            let n = leadingNumber(lineText) ?? 1
+            newItem.append(NSAttributedString(string: "\(n + 1). ", attributes: MarkdownStyler.defaultTypingAttributes))
+        } else if listKind == "dash" {
+            newItem.append(NSAttributedString(string: RichTextController.dashMarker, attributes: MarkdownStyler.defaultTypingAttributes))
+        } else {
+            newItem.append(NSAttributedString(string: MarkdownStyler.bulletMarker, attributes: MarkdownStyler.defaultTypingAttributes))
+        }
+        let full = NSRange(location: 0, length: newItem.length)
+        newItem.addAttribute(.paragraphStyle, value: MarkdownStyler.listParagraphStyle, range: full)
+        if isChecklist {
+            newItem.addAttribute(.checklist, value: false, range: full)
+        } else if let listKind {
+            newItem.addAttribute(.listKind, value: listKind, range: full)
+        }
+
+        guard textView.shouldChangeText(in: sel, replacementString: newItem.string) else { return true }
+        storage.beginEditing()
+        storage.replaceCharacters(in: sel, with: newItem)
+        storage.endEditing()
+        textView.didChangeText()
+
+        // Caret after the new marker; keep typing attributes in the list.
+        textView.setSelectedRange(NSRange(location: sel.location + newItem.length, length: 0))
+        var typing = MarkdownStyler.defaultTypingAttributes
+        typing[.paragraphStyle] = MarkdownStyler.listParagraphStyle
+        if isChecklist {
+            typing[.checklist] = false
+        } else if let listKind {
+            typing[.listKind] = listKind
+        }
+        textView.typingAttributes = typing
+        notifyActiveFormats()
+        return true
+    }
+
+    /// The text of a list item with its marker removed (to test for emptiness).
+    private func listItemContent(_ line: String, isChecklist: Bool, kind: String?) -> String {
+        if isChecklist {
+            let ns = line as NSString
+            var i = 0
+            if ns.length > 0, ns.character(at: 0) == 0xFFFC {
+                i = 1
+                if ns.length > 1, ns.character(at: 1) == 32 { i = 2 }
+            }
+            return ns.substring(from: min(i, ns.length)).trimmingCharacters(in: .whitespaces)
+        }
+        switch kind {
+        case "bullet":
+            if line.hasPrefix(MarkdownStyler.bulletMarker) {
+                return String(line.dropFirst(MarkdownStyler.bulletMarker.count)).trimmingCharacters(in: .whitespaces)
+            }
+        case "dash":
+            if line.hasPrefix(RichTextController.dashMarker) {
+                return String(line.dropFirst(RichTextController.dashMarker.count)).trimmingCharacters(in: .whitespaces)
+            }
+        case "ordered":
+            if let n = leadingNumber(line) {
+                let prefix = "\(n). "
+                if line.hasPrefix(prefix) {
+                    return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+                }
+            }
+        default:
+            break
+        }
+        return line.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The leading integer of `line` (e.g. 3 from "3. foo"), or nil.
+    private func leadingNumber(_ line: String) -> Int? {
+        let ns = line as NSString
+        var i = 0
+        while i < ns.length, let scalar = UnicodeScalar(ns.character(at: i)), Character(scalar).isNumber {
+            i += 1
+        }
+        guard i > 0 else { return nil }
+        return Int(ns.substring(to: i))
     }
 
     // MARK: - Inline formatting
@@ -1755,8 +1897,15 @@ final class NoteTextView: NSTextView {
         }
         let fileURLs = urls.filter { $0.isFileURL }
         guard !fileURLs.isEmpty else { return super.performDragOperation(sender) }
+        insertAttachments(from: fileURLs)
+        return true
+    }
 
-        for url in fileURLs {
+    /// Copies each file into the note's `attachments/` folder and inserts it —
+    /// inline for images, otherwise as a file link. Shared by drag-and-drop and
+    /// the paperclip button.
+    func insertAttachments(from urls: [URL]) {
+        for url in urls {
             guard let filename = controller?.onAddAttachment?(url) else { continue }
             let isImage = ["jpg","jpeg","png","gif","heic","tiff","bmp","webp","svg"]
                 .contains(url.pathExtension.lowercased())
@@ -1787,7 +1936,6 @@ final class NoteTextView: NSTextView {
                 : "[\(url.lastPathComponent)](attachments/\(filename))"
             insertAttributed(NSAttributedString(string: link, attributes: MarkdownStyler.defaultTypingAttributes))
         }
-        return true
     }
 
     /// Inserts pasted-from-another-app content, first making achromatic text

@@ -127,30 +127,25 @@ struct FormatBar: View {
             // "Aa" – opens the style panel above.
             aaButton
             divider()
-            // Text style
-            group {
-                fmtBtn("bold",   label: Loc.t("Pogrubienie", "Bold"), active: active.contains(.bold),  action: controller.toggleBold)
-                fmtBtn("italic", label: Loc.t("Kursywa", "Italic"), active: active.contains(.italic),      action: controller.toggleItalic)
-                fmtBtn("underline", label: Loc.t("Podkreślenie", "Underline"), active: active.contains(.underline), action: { controller.toggleUnderline() })
-            }
-            divider()
             // Font size (type a value or pick one from the list)
             FontSizeField(controller: controller)
                 .help(Loc.t("Rozmiar tekstu", "Text size"))
                 .padding(.horizontal, 4)
             divider()
-            // Lists
-            group {
-                fmtBtn("list.bullet",  label: Loc.t("Lista punktowana", "Bulleted list"), active: active.contains(.bulletList), action: { controller.toggleList("bullet") })
-                fmtBtn("list.number",  label: Loc.t("Lista numerowana", "Numbered list"), active: active.contains(.numberedList), action: { controller.toggleList("ordered") })
-                fmtBtn("checklist",    label: Loc.t("Lista zadań", "Checklist"), active: active.contains(.checklist),        action: controller.toggleChecklist)
-            }
+            // Checklist
+            fmtBtn("checklist", label: Loc.t("Lista zadań", "Checklist"), active: active.contains(.checklist), action: controller.toggleChecklist)
             divider()
             // Insert
             group {
                 fmtBtn("tablecells",                             label: Loc.t("Tabela", "Table"),    action: controller.insertTable)
                 fmtBtn("chevron.left.forwardslash.chevron.right", label: Loc.t("Kod", "Code"),      action: controller.insertInlineCode)
                 fmtBtn("link",                                   label: Loc.t("Link", "Link"),      action: { controller.insertLink() })
+            }
+            divider()
+            // Attachments & pen
+            group {
+                fmtBtn("paperclip", label: Loc.t("Dodaj załącznik", "Add attachment"), action: { controller.addAttachmentFromPanel() })
+                fmtBtn("pencil.tip.crop.circle", label: Loc.t("Rysowanie / narzędzia", "Drawing / tools"), action: {})
             }
         }
         .padding(.horizontal, 8)
