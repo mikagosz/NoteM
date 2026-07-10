@@ -324,6 +324,7 @@ private struct SmartFoldersSettingsView: View {
 enum SidebarSelection: Hashable {
     case home
     case tasks
+    case attachments
     case trash
     case note(UUID)
 }
@@ -416,6 +417,11 @@ struct ContentView: View {
                         selection = .tasks
                     }
                     .listRowInsets(sidebarFilterRowInsets)
+
+                    SidebarNavRow(label: "Załączniki", icon: "paperclip", count: model.attachments.count, isActive: selection == .attachments) {
+                        selection = .attachments
+                    }
+                    .listRowInsets(sidebarFilterRowInsets)
                 }
 
                 // Kosz in its own section → a gap from Zadania.
@@ -498,15 +504,16 @@ struct ContentView: View {
                                     isSelected: selection == .note(note.id))
                         }
                         .buttonStyle(.plain)
-                        .contextMenu {
-                            Button(note.pinned ? "Odepnij" : "Przypnij",
-                                   systemImage: note.pinned ? "pin.slash" : "pin") {
-                                model.togglePin(note)
-                            }
-                            categoryColorMenu(for: note)
-                            Button("Usuń", role: .destructive) {
-                                delete(note)
-                            }
+                        // Native right-click menu instead of SwiftUI's `.contextMenu`,
+                        // which draws an unremovable blue highlight ring on the List row.
+                        .overlay {
+                            NoteRightClickMenu(
+                                pinned: note.pinned,
+                                category: model.category(of: note),
+                                onTogglePin: { model.togglePin(note) },
+                                onSetCategoryColor: { model.setCategoryColor($0, for: note) },
+                                onDelete: { delete(note) }
+                            )
                         }
                         .listRowInsets(sidebarFilterRowInsets)
                     }
@@ -619,6 +626,10 @@ struct ContentView: View {
                 TasksView(model: model) { noteID in
                     selection = .note(noteID)
                 }
+            case .attachments:
+                AttachmentsView(model: model) { noteID in
+                    selection = .note(noteID)
+                }
             case .trash:
                 TrashView(model: model)
             case .note(let id):
@@ -649,25 +660,6 @@ struct ContentView: View {
             }
         }
         .tint(settings.theme.accent)
-    }
-
-    /// Context-menu submenu to set a note's category (folder) cover colour.
-    @ViewBuilder
-    private func categoryColorMenu(for note: Note) -> some View {
-        let category = model.category(of: note)
-        if !category.isEmpty {
-            Menu("Kolor folderu „\(category)”") {
-                ForEach(AppTheme.all) { theme in
-                    Button {
-                        model.setCategoryColor(theme.id, for: note)
-                    } label: {
-                        Label(theme.name, systemImage: "circle.fill")
-                    }
-                }
-                Divider()
-                Button("Brak koloru") { model.setCategoryColor(nil, for: note) }
-            }
-        }
     }
 
     private func addNote() {
@@ -857,11 +849,128 @@ private struct FolderColorMenu: NSViewRepresentable {
             submenu.addItem(byDefault)
             parent.submenu = submenu
             menu.addItem(parent)
-            menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+            // Pop up detached from this view (screen coords, `in: nil`): anchoring
+            // the menu to `self` makes the enclosing List's NSTableView draw a blue
+            // highlight ring around the row. Detaching avoids that ring entirely.
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         }
 
         @objc private func pick(_ sender: NSMenuItem) { onSetColor?(sender.representedObject as? String) }
         @objc private func pickDefault() { onSetColor?(nil) }
+
+        /// A small filled-circle colour swatch for a menu item.
+        private static func swatch(_ color: NSColor) -> NSImage {
+            let size = NSSize(width: 12, height: 12)
+            let image = NSImage(size: size)
+            image.lockFocus()
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
+            image.unlockFocus()
+            return image
+        }
+    }
+}
+
+/// Transparent overlay giving a note row its right-click menu via a native
+/// `NSMenu` (pin, folder colour, delete) — avoids SwiftUI `.contextMenu`'s
+/// unremovable blue highlight ring on the List row.
+private struct NoteRightClickMenu: NSViewRepresentable {
+    let pinned: Bool
+    let category: String
+    let onTogglePin: () -> Void
+    let onSetCategoryColor: (String?) -> Void
+    let onDelete: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = RightClickView()
+        view.configure(pinned: pinned, category: category,
+                       onTogglePin: onTogglePin,
+                       onSetCategoryColor: onSetCategoryColor,
+                       onDelete: onDelete)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? RightClickView)?.configure(pinned: pinned, category: category,
+                                               onTogglePin: onTogglePin,
+                                               onSetCategoryColor: onSetCategoryColor,
+                                               onDelete: onDelete)
+    }
+
+    final class RightClickView: NSView {
+        private var pinned = false
+        private var category = ""
+        private var onTogglePin: (() -> Void)?
+        private var onSetCategoryColor: ((String?) -> Void)?
+        private var onDelete: (() -> Void)?
+
+        func configure(pinned: Bool, category: String,
+                       onTogglePin: @escaping () -> Void,
+                       onSetCategoryColor: @escaping (String?) -> Void,
+                       onDelete: @escaping () -> Void) {
+            self.pinned = pinned
+            self.category = category
+            self.onTogglePin = onTogglePin
+            self.onSetCategoryColor = onSetCategoryColor
+            self.onDelete = onDelete
+        }
+
+        // Claim only right-mouse events; pass everything else (left-click, hover)
+        // through to the SwiftUI button underneath.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            switch NSApp.currentEvent?.type {
+            case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
+                return super.hitTest(point)
+            default:
+                return nil
+            }
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            let menu = NSMenu()
+
+            let pin = NSMenuItem(title: pinned ? "Odepnij" : "Przypnij",
+                                 action: #selector(togglePin), keyEquivalent: "")
+            pin.target = self
+            pin.image = NSImage(systemSymbolName: pinned ? "pin.slash" : "pin",
+                                accessibilityDescription: nil)
+            menu.addItem(pin)
+
+            // Folder-colour submenu — only for notes that live in a category folder.
+            if !category.isEmpty {
+                let parent = NSMenuItem(title: "Kolor folderu „\(category)”",
+                                        action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for theme in AppTheme.all {
+                    let item = NSMenuItem(title: theme.name, action: #selector(pickColor(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = theme.id
+                    item.image = Self.swatch(NSColor(theme.accent))
+                    submenu.addItem(item)
+                }
+                submenu.addItem(.separator())
+                let none = NSMenuItem(title: "Brak koloru", action: #selector(pickNoColor), keyEquivalent: "")
+                none.target = self
+                submenu.addItem(none)
+                parent.submenu = submenu
+                menu.addItem(parent)
+            }
+
+            menu.addItem(.separator())
+            let del = NSMenuItem(title: "Usuń", action: #selector(deleteNote), keyEquivalent: "")
+            del.target = self
+            del.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            menu.addItem(del)
+
+            // Detached pop-up (screen coords, `in: nil`) so the List's NSTableView
+            // doesn't draw a highlight ring around the row.
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+
+        @objc private func togglePin() { onTogglePin?() }
+        @objc private func pickColor(_ sender: NSMenuItem) { onSetCategoryColor?(sender.representedObject as? String) }
+        @objc private func pickNoColor() { onSetCategoryColor?(nil) }
+        @objc private func deleteNote() { onDelete?() }
 
         /// A small filled-circle colour swatch for a menu item.
         private static func swatch(_ color: NSColor) -> NSImage {
@@ -1030,6 +1139,123 @@ private struct TaskNoteRow: View {
             .help(note.taskDone ? "Usuń notatkę do kosza" : "Najpierw oznacz jako zrobione")
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// "Załączniki": every image, file and link found across all notes, grouped by
+/// kind. Each row shows the item and the note it lives in; tapping opens that
+/// note, and the arrow button opens the file/link itself.
+struct AttachmentsView: View {
+    let model: NotesModel
+    let openNote: (UUID) -> Void
+
+    /// Fixed section order: images, then files, then links.
+    private let order: [AttachmentRef.Kind] = [.image, .file, .link]
+
+    private func items(_ kind: AttachmentRef.Kind) -> [AttachmentRef] {
+        model.attachments.filter { $0.kind == kind }
+    }
+
+    var body: some View {
+        Group {
+            if model.attachments.isEmpty {
+                ContentUnavailableView(
+                    "Brak załączników",
+                    systemImage: "paperclip",
+                    description: Text("Dodaj zdjęcie lub plik do notatki (przeciągnij i upuść), albo wpisz link — pojawią się tutaj z odnośnikiem do notatki.")
+                )
+            } else {
+                List {
+                    ForEach(order, id: \.self) { kind in
+                        let refs = items(kind)
+                        if !refs.isEmpty {
+                            Section(kind.sectionTitle) {
+                                ForEach(refs) { ref in
+                                    AttachmentRow(
+                                        ref: ref,
+                                        fileURL: fileURL(for: ref),
+                                        onOpen: { openNote(ref.noteID) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Załączniki")
+    }
+
+    /// Absolute URL of a local attachment file (`nil` for links).
+    private func fileURL(for ref: AttachmentRef) -> URL? {
+        guard ref.kind != .link,
+              let note = model.notes.first(where: { $0.id == ref.noteID }) else { return nil }
+        return model.noteFolder(for: note).appendingPathComponent(ref.target)
+    }
+}
+
+/// A single row in the "Załączniki" view: a thumbnail (images) or icon, the
+/// item's label, the note it belongs to, and a button to open the file/link.
+private struct AttachmentRow: View {
+    let ref: AttachmentRef
+    let fileURL: URL?
+    let onOpen: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                thumbnail
+                    .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ref.label)
+                        .lineLimit(1)
+                        .truncationMode(ref.kind == .link ? .middle : .tail)
+                    Text("w: \(ref.noteTitle.isEmpty ? "Bez tytułu" : ref.noteTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: openExternally)
+            .help(ref.kind == .link ? "Otwórz link w przeglądarce" : "Otwórz podgląd")
+
+            Button(action: onOpen) {
+                Image(systemName: "note.text")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .help("Przejdź do notatki, w której się znajduje")
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if ref.kind == .image, let fileURL, let nsImage = NSImage(contentsOf: fileURL) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        } else {
+            Image(systemName: ref.kind.systemImage)
+                .font(.system(size: 18))
+                .foregroundStyle(.tint)
+        }
+    }
+
+    /// Opens the link in the browser or the file in its default app / Finder.
+    private func openExternally() {
+        switch ref.kind {
+        case .link:
+            if let url = URL(string: ref.target) { NSWorkspace.shared.open(url) }
+        case .image, .file:
+            if let fileURL { NSWorkspace.shared.open(fileURL) }
+        }
     }
 }
 

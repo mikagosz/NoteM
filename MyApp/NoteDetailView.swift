@@ -55,7 +55,21 @@ struct NoteDetailView: View {
         }
         .navigationTitle(note.title)
         .toolbar {
-            // Left cluster: search, task-list toggle, pin, export PDF, print.
+            // Left cluster: undo, redo, search, task-list toggle, pin, export PDF, print.
+            ToolbarItem(placement: .automatic) {
+                Button { controller.undo() } label: {
+                    Label("Cofnij", systemImage: "arrow.uturn.backward")
+                        .foregroundStyle(accent)
+                }
+                .help("Cofnij ostatnią zmianę (⌘Z)")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button { controller.redo() } label: {
+                    Label("Ponów", systemImage: "arrow.uturn.forward")
+                        .foregroundStyle(accent)
+                }
+                .help("Ponów cofniętą zmianę (⇧⌘Z)")
+            }
             ToolbarItem(placement: .automatic) {
                 Button { controller.showFindBar() } label: {
                     Label("Szukaj w notatce", systemImage: "magnifyingglass")

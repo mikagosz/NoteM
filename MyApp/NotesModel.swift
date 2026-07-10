@@ -34,6 +34,10 @@ final class NotesModel {
     /// Cover-colour theme id per category folder (e.g. "Praca" → "ocean").
     private(set) var categoryColors: [String: String] = [:]
 
+    /// Every attachment / image / link found across all notes, for the
+    /// "Załączniki" view. Rebuilt whenever the notes or their content change.
+    private(set) var attachments: [AttachmentRef] = []
+
     /// Absolute URL of the current store root (local Documents or iCloud Drive).
     var rootURL: URL { store.rootURL }
 
@@ -44,7 +48,9 @@ final class NotesModel {
     /// resulting filename, or `nil` if the copy failed.
     @discardableResult
     func addAttachment(fileURL: URL, to note: Note) -> String? {
-        store.addAttachment(fileURL: fileURL, toNote: note)
+        let filename = store.addAttachment(fileURL: fileURL, toNote: note)
+        rebuildAttachments()
+        return filename
     }
 
     /// Supplies the trash auto-clean window (days). Set by the UI from settings.
@@ -85,6 +91,8 @@ final class NotesModel {
             }
         }
         categoryColors = colors
+
+        rebuildAttachments()
     }
 
     // MARK: - Category cover colour
@@ -184,6 +192,7 @@ final class NotesModel {
         let trashed = store.trashNote(note)
         notes.removeAll { $0.id == note.id }
         trashedNotes.insert(trashed, at: 0)
+        rebuildAttachments()
     }
 
     /// Restores a trashed note back to its original location.
@@ -192,6 +201,7 @@ final class NotesModel {
         trashedNotes.removeAll { $0.id == note.id }
         notes.insert(restored, at: 0)
         notes.sort(by: Self.pinnedThenModified)
+        rebuildAttachments()
     }
 
     /// Permanently deletes a trashed note's folder from disk.
@@ -286,6 +296,59 @@ final class NotesModel {
         return ids
     }
 
+    // MARK: - Attachments & links
+
+    /// Rebuilds `attachments` by scanning every note: files (images and other
+    /// documents) come from each note's `attachments/` folder, links are
+    /// detected inside the note's markdown content. Notes keep their list order.
+    private func rebuildAttachments() {
+        var result: [AttachmentRef] = []
+        for note in notes {
+            // Files physically copied into the note's attachments/ folder — this
+            // catches drag-dropped and pasted images too, which live as visual
+            // attachments rather than as `![](…)` markdown.
+            for filename in store.attachmentFilenames(for: note) {
+                let ext = (filename as NSString).pathExtension.lowercased()
+                let kind: AttachmentRef.Kind = AttachmentRef.imageExtensions.contains(ext) ? .image : .file
+                result.append(AttachmentRef(
+                    noteID: note.id,
+                    noteTitle: note.title,
+                    kind: kind,
+                    label: filename,
+                    target: "attachments/\(filename)"
+                ))
+            }
+            // Web / mail links written anywhere in the note's markdown.
+            for link in Self.webLinks(in: store.loadContent(for: note)) {
+                result.append(AttachmentRef(
+                    noteID: note.id,
+                    noteTitle: note.title,
+                    kind: .link,
+                    label: link,
+                    target: link
+                ))
+            }
+        }
+        attachments = result
+    }
+
+    /// All distinct http/https/mailto links in `content`, in order of appearance.
+    private static func webLinks(in content: String) -> [String] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return []
+        }
+        let ns = content as NSString
+        var seen = Set<String>()
+        var links: [String] = []
+        for match in detector.matches(in: content, range: NSRange(location: 0, length: ns.length)) {
+            guard let url = match.url, let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" || scheme == "mailto" else { continue }
+            let string = url.absoluteString
+            if seen.insert(string).inserted { links.append(string) }
+        }
+        return links
+    }
+
     // MARK: - Collected tasks
 
     /// All unchecked checklist items (`- [ ]`) across every note. Order follows
@@ -364,6 +427,7 @@ final class NotesModel {
 
         notes[index] = saved
         notes.sort(by: Self.pinnedThenModified)
+        rebuildAttachments()
     }
 
     /// Sort order for the notes list: pinned notes first, then newest-modified.
