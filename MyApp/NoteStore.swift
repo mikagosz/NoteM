@@ -320,6 +320,19 @@ final class NoteStore {
         return dest.lastPathComponent
     }
 
+    /// Filenames inside a note's `attachments/` folder, sorted. Empty when the
+    /// note has no attachments folder. Used to build the "Załączniki" index.
+    func attachmentFilenames(for note: Note) -> [String] {
+        let dir = url(forFolderPath: note.folderPath)
+            .appendingPathComponent("attachments", isDirectory: true)
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return items.map(\.lastPathComponent).sorted()
+    }
+
     // MARK: - Manifest (for cross-Mac change detection)
 
     /// Writes `manifest.json` at the store root with the current timestamp.

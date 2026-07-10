@@ -8,6 +8,15 @@ extension NSPasteboard.PasteboardType {
     static let noteMRichText = NSPasteboard.PasteboardType("com.notem.richtext")
 }
 
+extension NSAttributedString.Key {
+    /// User-set display width / height (in points) for a resized image attachment.
+    /// Stored on the attachment character so the size survives archiving/reload and
+    /// is re-applied to `NSTextAttachment.bounds` on load. Height is optional; when
+    /// missing the aspect ratio of the image is used.
+    static let noteMImageWidth = NSAttributedString.Key("noteMImageWidth")
+    static let noteMImageHeight = NSAttributedString.Key("noteMImageHeight")
+}
+
 /// Lossless disk format for a note's attributed string: a keyed archive that
 /// preserves colours, fonts, sizes, inline images and NoteM's custom attributes.
 enum NoteRichArchive {
@@ -66,6 +75,20 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
     func hideFloatingPanel() { floatingPanel?.hide() }
 
+    /// Undo the last edit (mirrors ⌘Z), driven from the toolbar button.
+    func undo() {
+        guard let textView, let manager = textView.undoManager, manager.canUndo else { return }
+        textView.window?.makeFirstResponder(textView)
+        manager.undo()
+    }
+
+    /// Redo the last undone edit (mirrors ⇧⌘Z), driven from the toolbar button.
+    func redo() {
+        guard let textView, let manager = textView.undoManager, manager.canRedo else { return }
+        textView.window?.makeFirstResponder(textView)
+        manager.redo()
+    }
+
     /// Shows the native find bar (⌘F) so the user can search within the note.
     func showFindBar() {
         guard let textView else { return }
@@ -84,8 +107,27 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         guard let textView, let storage = textView.textStorage else { return }
         isSettingText = true
         storage.setAttributedString(storedContent)
+        Self.reapplyImageSizes(in: storage)
         textView.typingAttributes = MarkdownStyler.defaultTypingAttributes
         isSettingText = false
+    }
+
+    /// Restores each resized image to its saved display width. `NSTextAttachment`
+    /// doesn't reliably archive its `bounds`, so we persist the width in the
+    /// `.noteMImageWidth` attribute and re-apply it here (keeping the aspect ratio
+    /// from the image itself).
+    static func reapplyImageSizes(in storage: NSTextStorage) {
+        let full = NSRange(location: 0, length: storage.length)
+        storage.enumerateAttribute(.noteMImageWidth, in: full) { value, range, _ in
+            guard let width = value as? CGFloat,
+                  let attachment = storage.attribute(.attachment, at: range.location, effectiveRange: nil) as? NSTextAttachment,
+                  let image = NoteTextView.image(of: attachment), image.size.width > 0 else { return }
+            // Use the stored height if present (stretched images); otherwise keep
+            // the image's aspect ratio.
+            let height = (storage.attribute(.noteMImageHeight, at: range.location, effectiveRange: nil) as? CGFloat)
+                ?? width * (image.size.height / image.size.width)
+            attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        }
     }
 
     // MARK: - NSTextViewDelegate
@@ -527,6 +569,12 @@ final class NoteTextView: NSTextView {
     /// Clicking a checklist's checkbox toggles its state (and autosaves) instead
     /// of moving the caret.
     override func mouseDown(with event: NSEvent) {
+        // Dragging a handle of the already-selected image resizes it.
+        if beginImageResizeIfHandleClicked(event) { return }
+        // Clicking an image selects it (shows the Word-style handles).
+        if selectImageIfClicked(event) { return }
+        // Any other click clears the image selection.
+        if selectedImageRange != nil { selectedImageRange = nil; needsDisplay = true }
         if toggleChecklistIfCheckboxClicked(event) { return }
         if openWikiLinkIfClicked(event) { return }
         super.mouseDown(with: event)
@@ -535,6 +583,256 @@ final class NoteTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         maybeShowWikiCompletion()
+    }
+
+    // MARK: - Image resizing (Word-style selection with 8 handles)
+
+    /// The eight resize handles around a selected image, like Word.
+    private enum ResizeHandle: CaseIterable {
+        case topLeft, top, topRight, left, right, bottomLeft, bottom, bottomRight
+
+        var isCorner: Bool {
+            self == .topLeft || self == .topRight || self == .bottomLeft || self == .bottomRight
+        }
+        /// A corner or a left/right side handle changes width.
+        var affectsWidth: Bool { self != .top && self != .bottom }
+        /// A corner or a top/bottom side handle changes height.
+        var affectsHeight: Bool { self != .left && self != .right }
+    }
+
+    /// Diameter of the square selection handles.
+    private static let imageHandleSize: CGFloat = 9
+
+    /// Character range (length 1) of the image the user has selected, or `nil`.
+    private var selectedImageRange: NSRange?
+
+    /// Tracking area that delivers hover events so the cursor can switch to a
+    /// resize shape over a selected image's handles.
+    private var handleTrackingArea: NSTrackingArea?
+
+    /// The image backing an attachment, whether it stores it directly (dropped /
+    /// pasted images) or via an `NSTextAttachmentCell` (markdown `![](…)` images).
+    static func image(of attachment: NSTextAttachment) -> NSImage? {
+        if let image = attachment.image { return image }
+        if let cell = attachment.attachmentCell as? NSTextAttachmentCell { return cell.image }
+        return nil
+    }
+
+    /// The resizable image attachment at `point`, if any (skips checkboxes).
+    private func imageAttachment(at point: NSPoint) -> (range: NSRange, attachment: NSTextAttachment, image: NSImage)? {
+        guard let storage = textStorage, storage.length > 0,
+              let layoutManager, let textContainer else { return nil }
+        let containerPoint = CGPoint(x: point.x - textContainerInset.width,
+                                     y: point.y - textContainerInset.height)
+        let charIndex = layoutManager.characterIndex(
+            for: containerPoint, in: textContainer, fractionOfDistanceBetweenInsertionPoints: nil)
+        guard charIndex < storage.length else { return nil }
+        let paragraphLocation = (storage.string as NSString)
+            .paragraphRange(for: NSRange(location: charIndex, length: 0)).location
+        if storage.attribute(.checklist, at: paragraphLocation, effectiveRange: nil) != nil { return nil }
+        guard let attachment = storage.attribute(.attachment, at: charIndex, effectiveRange: nil) as? NSTextAttachment,
+              let image = Self.image(of: attachment), image.size.width > 0 else { return nil }
+        let range = NSRange(location: charIndex, length: 1)
+        // Confirm the point is actually inside the image glyph.
+        guard imageRect(forCharacterRange: range).contains(point) else { return nil }
+        return (range, attachment, image)
+    }
+
+    /// Selects the image under the click (showing its handles) instead of moving
+    /// the caret. Returns `true` when an image was hit.
+    private func selectImageIfClicked(_ event: NSEvent) -> Bool {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let hit = imageAttachment(at: point) else { return false }
+        selectedImageRange = hit.range
+        needsDisplay = true
+        return true
+    }
+
+    /// If the click starts on one of the selected image's eight handles, run a
+    /// live drag loop resizing it until the mouse is released.
+    private func beginImageResizeIfHandleClicked(_ event: NSEvent) -> Bool {
+        guard let storage = textStorage,
+              let layoutManager, let textContainer,
+              let charRange = selectedImageRange,
+              charRange.location < storage.length,
+              let attachment = storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) as? NSTextAttachment,
+              let image = Self.image(of: attachment), image.size.width > 0 else { return false }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let rect = imageRect(forCharacterRange: charRange)
+        guard let handle = handleHit(at: point, in: rect) else { return false }
+
+        // Markdown (cell-based) images ignore `bounds`; promote to a plain image
+        // attachment so its size becomes adjustable.
+        if attachment.image == nil {
+            attachment.image = image
+            attachment.attachmentCell = nil
+        }
+
+        let left = rect.minX, top = rect.minY
+        let aspect = image.size.height / image.size.width
+        let minSize: CGFloat = 30
+        let maxWidth = max(minSize, textContainer.size.width - 2 * textContainerInset.width - 4)
+
+        var size = rect.size
+        while let drag = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let p = convert(drag.locationInWindow, from: nil)
+            if handle.isCorner {
+                // Proportional: drive off the horizontal distance from the anchor.
+                let width = min(max(p.x - left, minSize), maxWidth)
+                size = CGSize(width: width, height: width * aspect)
+            } else if handle.affectsWidth {
+                size.width = min(max(p.x - left, minSize), maxWidth)
+            } else if handle.affectsHeight {
+                size.height = max(p.y - top, minSize)
+            }
+            attachment.bounds = CGRect(origin: .zero, size: size)
+            layoutManager.invalidateLayout(forCharacterRange: charRange, actualCharacterRange: nil)
+            layoutManager.invalidateDisplay(forCharacterRange: charRange)
+            // Force a synchronous redraw so the resize is visible live (the event
+            // loop is blocked inside this tracking loop).
+            needsDisplay = true
+            displayIfNeeded()
+            if drag.type == .leftMouseUp { break }
+        }
+
+        // Persist the chosen size and mark the note dirty so it autosaves.
+        storage.addAttribute(.noteMImageWidth, value: size.width, range: charRange)
+        storage.addAttribute(.noteMImageHeight, value: size.height, range: charRange)
+        controller?.onChange?(attributedString())
+        needsDisplay = true
+        return true
+    }
+
+    /// Which handle (if any) sits under `point`, given the image's view rect.
+    private func handleHit(at point: NSPoint, in rect: NSRect) -> ResizeHandle? {
+        let grab = Self.imageHandleSize + 5
+        for handle in ResizeHandle.allCases {
+            let center = handleCenter(handle, in: rect)
+            if abs(point.x - center.x) <= grab && abs(point.y - center.y) <= grab {
+                return handle
+            }
+        }
+        return nil
+    }
+
+    /// Centre point of a handle on the image's selection rect (view coords).
+    private func handleCenter(_ handle: ResizeHandle, in rect: NSRect) -> NSPoint {
+        let xs = [rect.minX, rect.midX, rect.maxX]
+        let ys = [rect.minY, rect.midY, rect.maxY]
+        switch handle {
+        case .topLeft:     return NSPoint(x: xs[0], y: ys[0])
+        case .top:         return NSPoint(x: xs[1], y: ys[0])
+        case .topRight:    return NSPoint(x: xs[2], y: ys[0])
+        case .left:        return NSPoint(x: xs[0], y: ys[1])
+        case .right:       return NSPoint(x: xs[2], y: ys[1])
+        case .bottomLeft:  return NSPoint(x: xs[0], y: ys[2])
+        case .bottom:      return NSPoint(x: xs[1], y: ys[2])
+        case .bottomRight: return NSPoint(x: xs[2], y: ys[2])
+        }
+    }
+
+    // MARK: - Hover cursor over handles
+
+    /// Keeps our hover-tracking area covering the whole visible view.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = handleTrackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        handleTrackingArea = area
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if applyResizeCursor(at: convert(event.locationInWindow, from: nil)) { return }
+        super.cursorUpdate(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if applyResizeCursor(at: convert(event.locationInWindow, from: nil)) { return }
+        super.mouseMoved(with: event)
+    }
+
+    /// Sets a resize cursor when `point` is over a selected image's handle.
+    /// Returns `true` when it did (so the caller leaves the default I-beam alone).
+    @discardableResult
+    private func applyResizeCursor(at point: NSPoint) -> Bool {
+        guard let storage = textStorage,
+              let charRange = selectedImageRange,
+              charRange.location < storage.length,
+              storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) is NSTextAttachment,
+              let handle = handleHit(at: point, in: imageRect(forCharacterRange: charRange)) else { return false }
+        cursor(for: handle).set()
+        return true
+    }
+
+    private func cursor(for handle: ResizeHandle) -> NSCursor {
+        switch handle {
+        case .left, .right:            return .resizeLeftRight
+        case .top, .bottom:            return .resizeUpDown
+        case .topLeft, .bottomRight:   return Self.resizeNWSE
+        case .topRight, .bottomLeft:   return Self.resizeNESW
+        }
+    }
+
+    // Diagonal resize cursors aren't public; load the system ones by selector and
+    // fall back to the crosshair if unavailable.
+    private static let resizeNWSE = diagonalCursor("_windowResizeNorthWestSouthEastCursor") ?? .crosshair
+    private static let resizeNESW = diagonalCursor("_windowResizeNorthEastSouthWestCursor") ?? .crosshair
+
+    private static func diagonalCursor(_ selectorName: String) -> NSCursor? {
+        let selector = NSSelectorFromString(selectorName)
+        guard NSCursor.responds(to: selector),
+              let cursor = NSCursor.perform(selector)?.takeUnretainedValue() as? NSCursor else { return nil }
+        return cursor
+    }
+
+    /// View-space rectangle of the glyph for a single-character (attachment) range.
+    private func imageRect(forCharacterRange charRange: NSRange) -> NSRect {
+        guard let layoutManager, let textContainer else { return .zero }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: charRange, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+        rect.origin.x += textContainerInset.width
+        rect.origin.y += textContainerInset.height
+        return rect
+    }
+
+    /// Draws the selection border and eight resize handles around the selected
+    /// image (Word-style). Nothing is drawn when no image is selected.
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let storage = textStorage,
+              let charRange = selectedImageRange,
+              charRange.location < storage.length,
+              let attachment = storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) as? NSTextAttachment,
+              Self.image(of: attachment) != nil else { return }
+
+        let rect = imageRect(forCharacterRange: charRange)
+        guard rect.width > 1, rect.height > 1 else { return }
+
+        // Selection border.
+        let border = NSBezierPath(rect: rect)
+        border.lineWidth = 1
+        NSColor.controlAccentColor.setStroke()
+        border.stroke()
+
+        // Eight handles.
+        let s = Self.imageHandleSize
+        for handle in ResizeHandle.allCases {
+            let c = handleCenter(handle, in: rect)
+            let box = NSRect(x: c.x - s / 2, y: c.y - s / 2, width: s, height: s)
+            let path = NSBezierPath(ovalIn: box)
+            NSColor.white.setFill()
+            path.fill()
+            NSColor.controlAccentColor.setStroke()
+            path.lineWidth = 1.5
+            path.stroke()
+        }
     }
 
     // MARK: - Wiki links
