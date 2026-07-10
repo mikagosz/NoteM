@@ -718,6 +718,59 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         onFontSizeChange?(clamped)
     }
 
+    // MARK: - Font family
+
+    /// The font family at the caret / start of the selection.
+    func currentFontFamily() -> String {
+        guard let textView else { return MarkdownStyler.bodyFont.familyName ?? "Helvetica" }
+        let range = textView.selectedRange()
+        let font: NSFont
+        if range.length == 0 || range.location >= (textView.textStorage?.length ?? 0) {
+            font = textView.typingAttributes[.font] as? NSFont ?? MarkdownStyler.bodyFont
+        } else {
+            font = textView.textStorage?.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+                ?? MarkdownStyler.bodyFont
+        }
+        let family = font.familyName ?? "Helvetica"
+        // The system UI font reports an internal family name (".AppleSystemUIFont");
+        // present it as the friendly "System".
+        return family.hasPrefix(".") ? "System" : family
+    }
+
+    /// Changes the font family of the selection (or typing attributes), keeping
+    /// the current size and bold/italic traits. Pass "System" for the system font.
+    func setFontFamily(_ family: String) {
+        guard let textView, let storage = textView.textStorage else { return }
+        let fontManager = NSFontManager.shared
+
+        func convertFont(_ font: NSFont) -> NSFont {
+            let traits = font.fontDescriptor.symbolicTraits
+            var result = family == "System"
+                ? NSFont.systemFont(ofSize: font.pointSize)
+                : fontManager.convert(font, toFamily: family)
+            if traits.contains(.bold)   { result = fontManager.convert(result, toHaveTrait: .boldFontMask) }
+            if traits.contains(.italic) { result = fontManager.convert(result, toHaveTrait: .italicFontMask) }
+            return result
+        }
+
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            var attrs = textView.typingAttributes
+            let font = attrs[.font] as? NSFont ?? MarkdownStyler.bodyFont
+            attrs[.font] = convertFont(font)
+            textView.typingAttributes = attrs
+            return
+        }
+        guard textView.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            let font = value as? NSFont ?? MarkdownStyler.bodyFont
+            storage.addAttribute(.font, value: convertFont(font), range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
     // MARK: - Active formats (toolbar highlight)
 
     private func notifyActiveFormats() {

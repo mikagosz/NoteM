@@ -98,6 +98,8 @@ struct FormatBar: View {
     @State private var active: ActiveFormats = []
     /// Paragraph style at the caret, to highlight the "Aa" style panel.
     @State private var paragraphStyle: ParagraphStyleKind = .body
+    /// Font family at the caret, shown in the font menu.
+    @State private var fontFamily: String = ""
     /// Whether the "Aa" style panel is shown one row above the main capsule.
     @State private var showStyle = false
 
@@ -121,6 +123,30 @@ struct FormatBar: View {
     private func refreshState() {
         active = controller.currentActiveFormats()
         paragraphStyle = controller.currentParagraphStyle()
+        fontFamily = controller.currentFontFamily()
+    }
+
+    /// Common font families offered in the note's font menu.
+    private static let fontFamilies = [
+        "System", "Helvetica", "Arial", "Times New Roman", "Georgia", "Courier New",
+        "Menlo", "Verdana", "Palatino", "Trebuchet MS", "Snell Roundhand"
+    ]
+
+    private var fontMenu: some View {
+        Menu {
+            ForEach(Self.fontFamilies, id: \.self) { name in
+                Button(name) { controller.setFontFamily(name); fontFamily = name }
+            }
+        } label: {
+            Text(fontFamily.isEmpty ? Loc.t("Czcionka", "Font") : fontFamily)
+                .lineLimit(1)
+                .frame(maxWidth: 96)
+        }
+        .menuStyle(.borderlessButton)
+        .tint(.primary)
+        .foregroundStyle(.primary)
+        .fixedSize()
+        .help(Loc.t("Czcionka", "Font"))
     }
 
     /// The always-visible bottom capsule of quick tools.
@@ -133,6 +159,9 @@ struct FormatBar: View {
             FontSizeField(controller: controller)
                 .help(Loc.t("Rozmiar tekstu", "Text size"))
                 .padding(.horizontal, 4)
+            // Font family
+            fontMenu
+                .padding(.horizontal, 2)
             divider()
             // Checklist
             fmtBtn("checklist", label: Loc.t("Lista zadań", "Checklist"), active: active.contains(.checklist), action: controller.toggleChecklist)

@@ -157,6 +157,47 @@ struct EditableShape: Identifiable {
     }
 }
 
+/// An editable text object, placed and sized like a shape.
+struct EditableText: Identifiable {
+    let id = UUID()
+    var frame: CGRect
+    var string: String
+    var fontSize: CGFloat = 24
+    var bold = false
+    var italic = false
+    var underline = false
+    var strike = false
+    var alignment: NSTextAlignment = .left
+    var color: NSColor = .labelColor
+    var fontName: String = "Helvetica"
+
+    /// The font honouring name, size and bold/italic traits.
+    func nsFont() -> NSFont {
+        var font = NSFont(name: fontName, size: fontSize) ?? .systemFont(ofSize: fontSize)
+        let fm = NSFontManager.shared
+        if bold { font = fm.convert(font, toHaveTrait: .boldFontMask) }
+        if italic { font = fm.convert(font, toHaveTrait: .italicFontMask) }
+        return font
+    }
+
+    /// The attributed string used for rendering into the flattened image.
+    func attributedString() -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = alignment
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: nsFont(),
+            .foregroundColor: color,
+            .paragraphStyle: paragraph
+        ]
+        if underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if strike { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+        return NSAttributedString(string: string, attributes: attrs)
+    }
+}
+
+/// Fonts offered in the text object's font menu.
+let drawingFontNames = ["Helvetica", "Menlo", "Times New Roman", "Georgia", "Courier New", "Snell Roundhand"]
+
 // MARK: - Custom canvas (macOS lacks PKCanvasView)
 
 /// Transparent `NSView` that captures freehand input (stored as a `PKDrawing`)
@@ -169,20 +210,28 @@ final class NoteDrawingView: NSView {
     var isEraser = false
     var preciseEraser = false
 
-    /// Called when the selected shape changes (or its geometry updates), so the
-    /// SwiftUI shape toolbar can position and populate itself.
+    /// Called when the selected shape changes (or its geometry updates).
     var onSelectionChange: ((EditableShape?) -> Void)?
+    /// Called when the selected text object changes.
+    var onTextChange: ((EditableText?) -> Void)?
+    /// Called when a text object should enter edit mode (added or double-clicked).
+    var onEditText: (() -> Void)?
+    /// Id of the text currently being edited via the SwiftUI overlay; the canvas
+    /// skips drawing it so the two don't overlap. Driven from SwiftUI.
+    var editingTextID: UUID? { didSet { if oldValue != editingTextID { needsDisplay = true } } }
 
     private(set) var drawing = PKDrawing()
     private(set) var shapes: [EditableShape] = []
+    private(set) var texts: [EditableText] = []
     private var selectedID: UUID?
 
     private var livePoints: [CGPoint] = []
     private var dragMode: DragMode = .none
     private var lastPoint: CGPoint = .zero
 
-    private var undoStack: [(PKDrawing, [EditableShape])] = []
-    private var redoStack: [(PKDrawing, [EditableShape])] = []
+    private typealias Snapshot = (PKDrawing, [EditableShape], [EditableText])
+    private var undoStack: [Snapshot] = []
+    private var redoStack: [Snapshot] = []
 
     private let handleSize: CGFloat = 11
 
@@ -202,15 +251,19 @@ final class NoteDrawingView: NSView {
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
 
-        // 1. A handle of the selected shape → resize.
-        if let id = selectedID, let shape = shapes.first(where: { $0.id == id }),
-           let h = handleIndex(at: p, frame: shape.frame) {
+        // Double-click on a text → edit it.
+        if event.clickCount == 2, let t = texts.last(where: { $0.frame.contains(p) }) {
+            selectedID = t.id; notifySelection(); onEditText?(); needsDisplay = true; return
+        }
+
+        // 1. A handle of the selected object → resize.
+        if let id = selectedID, let f = objectFrame(id), let h = handleIndex(at: p, frame: f) {
             pushUndo(); dragMode = .resize(h); lastPoint = p; return
         }
-        // 2. Click on a shape → select + move.
-        if let idx = shapes.lastIndex(where: { $0.frame.insetBy(dx: -4, dy: -4).contains(p) }) {
+        // 2. Click on a text or shape (texts sit on top) → select + move.
+        if let id = topObject(at: p) {
             pushUndo()
-            selectedID = shapes[idx].id
+            selectedID = id
             dragMode = .move; lastPoint = p
             notifySelection(); needsDisplay = true
             window?.invalidateCursorRects(for: self)
@@ -256,6 +309,8 @@ final class NoteDrawingView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         // Shapes first, so pen strokes can be drawn on top of them.
         for shape in shapes { drawShape(shape) }
+        // Text objects (the one being edited is shown via a SwiftUI overlay, so skip it).
+        for text in texts where text.id != editingTextID { drawText(text) }
 
         // PencilKit strokes (committed + live), with the real ink effect.
         var strokes = drawing.strokes
@@ -267,9 +322,11 @@ final class NoteDrawingView: NSView {
         }
 
         // Selection chrome on top.
-        if let id = selectedID, let shape = shapes.first(where: { $0.id == id }) {
-            drawSelection(shape.frame)
-        }
+        if let id = selectedID, let f = objectFrame(id) { drawSelection(f) }
+    }
+
+    private func drawText(_ text: EditableText) {
+        text.attributedString().draw(in: text.frame)
     }
 
     private func drawShape(_ shape: EditableShape) {
@@ -370,9 +427,25 @@ final class NoteDrawingView: NSView {
         return nil
     }
 
+    /// The frame of any selectable object (shape or text) by id.
+    private func objectFrame(_ id: UUID) -> CGRect? {
+        shapes.first(where: { $0.id == id })?.frame ?? texts.first(where: { $0.id == id })?.frame
+    }
+
+    private func setObjectFrame(_ id: UUID, _ f: CGRect) {
+        if let i = shapes.firstIndex(where: { $0.id == id }) { shapes[i].frame = f }
+        else if let i = texts.firstIndex(where: { $0.id == id }) { texts[i].frame = f }
+    }
+
+    /// Topmost object hit at `point` (texts sit above shapes).
+    private func topObject(at point: CGPoint) -> UUID? {
+        if let t = texts.last(where: { $0.frame.insetBy(dx: -4, dy: -4).contains(point) }) { return t.id }
+        if let s = shapes.last(where: { $0.frame.insetBy(dx: -4, dy: -4).contains(point) }) { return s.id }
+        return nil
+    }
+
     private func resizeSelected(handle: Int, to p: CGPoint) {
-        guard let idx = shapes.firstIndex(where: { $0.id == selectedID }) else { return }
-        var f = shapes[idx].frame
+        guard let id = selectedID, var f = objectFrame(id) else { return }
         var minX = f.minX, minY = f.minY, maxX = f.maxX, maxY = f.maxY
         switch handle {
         case 0: minX = p.x; minY = p.y
@@ -387,16 +460,17 @@ final class NoteDrawingView: NSView {
         }
         f = CGRect(x: min(minX, maxX), y: min(minY, maxY),
                    width: max(12, abs(maxX - minX)), height: max(12, abs(maxY - minY)))
-        shapes[idx].frame = f
+        setObjectFrame(id, f)
     }
 
     private func moveSelected(by d: CGPoint) {
-        guard let idx = shapes.firstIndex(where: { $0.id == selectedID }) else { return }
-        shapes[idx].frame = shapes[idx].frame.offsetBy(dx: d.x, dy: d.y)
+        guard let id = selectedID, let f = objectFrame(id) else { return }
+        setObjectFrame(id, f.offsetBy(dx: d.x, dy: d.y))
     }
 
     private func notifySelection() {
         onSelectionChange?(shapes.first(where: { $0.id == selectedID }))
+        onTextChange?(texts.first(where: { $0.id == selectedID }))
     }
 
     // MARK: SwiftUI-facing API
@@ -420,10 +494,43 @@ final class NoteDrawingView: NSView {
     func setSelectedStroke(_ color: NSColor?) { mutateSelected { $0.stroke = color } }
     func setSelectedLineWidth(_ width: CGFloat) { mutateSelected { $0.lineWidth = width } }
 
+    /// Adds a new (empty) text object, centred and selected for editing.
+    func addText() {
+        pushUndo()
+        let center = CGPoint(x: bounds.midX == 0 ? 200 : bounds.midX,
+                             y: bounds.midY == 0 ? 120 : bounds.midY)
+        let size = CGSize(width: 240, height: 56)
+        let text = EditableText(frame: CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                                              width: size.width, height: size.height),
+                                string: "")
+        texts.append(text)
+        selectedID = text.id
+        notifySelection(); onEditText?(); needsDisplay = true
+        window?.makeFirstResponder(self)
+    }
+
+    func selectedTextString() -> String { texts.first(where: { $0.id == selectedID })?.string ?? "" }
+
+    /// Updates the selected text's content (no undo entry — called while typing).
+    func setSelectedTextString(_ s: String) {
+        guard let i = texts.firstIndex(where: { $0.id == selectedID }) else { return }
+        texts[i].string = s
+        needsDisplay = true
+    }
+
+    /// Applies a formatting change to the selected text (with an undo entry).
+    func mutateSelectedText(_ change: (inout EditableText) -> Void) {
+        guard let i = texts.firstIndex(where: { $0.id == selectedID }) else { return }
+        pushUndo()
+        change(&texts[i])
+        notifySelection(); needsDisplay = true
+    }
+
     func deleteSelected() {
         guard let id = selectedID else { return }
         pushUndo()
         shapes.removeAll { $0.id == id }
+        texts.removeAll { $0.id == id }
         selectedID = nil
         notifySelection(); needsDisplay = true
     }
@@ -437,19 +544,19 @@ final class NoteDrawingView: NSView {
 
     // MARK: Undo / redo
 
-    private func pushUndo() { undoStack.append((drawing, shapes)); redoStack.removeAll() }
+    private func pushUndo() { undoStack.append((drawing, shapes, texts)); redoStack.removeAll() }
 
     func undoDraw() {
         guard let last = undoStack.popLast() else { return }
-        redoStack.append((drawing, shapes))
-        drawing = last.0; shapes = last.1; selectedID = nil
+        redoStack.append((drawing, shapes, texts))
+        drawing = last.0; shapes = last.1; texts = last.2; selectedID = nil
         notifySelection(); needsDisplay = true
     }
 
     func redoDraw() {
         guard let next = redoStack.popLast() else { return }
-        undoStack.append((drawing, shapes))
-        drawing = next.0; shapes = next.1; selectedID = nil
+        undoStack.append((drawing, shapes, texts))
+        drawing = next.0; shapes = next.1; texts = next.2; selectedID = nil
         notifySelection(); needsDisplay = true
     }
 
@@ -458,9 +565,8 @@ final class NoteDrawingView: NSView {
     /// Renders shapes + strokes into a single image covering all content.
     func flattenedImage() -> NSImage? {
         var content = drawing.bounds
-        for shape in shapes {
-            content = content.isEmpty ? shape.frame : content.union(shape.frame)
-        }
+        for shape in shapes { content = content.isEmpty ? shape.frame : content.union(shape.frame) }
+        for text in texts { content = content.isEmpty ? text.frame : content.union(text.frame) }
         content = content.insetBy(dx: -8, dy: -8)
         guard content.width > 1, content.height > 1 else { return nil }
 
@@ -468,6 +574,7 @@ final class NoteDrawingView: NSView {
         image.lockFocusFlipped(true)
         NSGraphicsContext.current?.cgContext.translateBy(x: -content.minX, y: -content.minY)
         for shape in shapes { drawShape(shape) }
+        for text in texts { drawText(text) }
         if !drawing.bounds.isEmpty {
             drawing.image(from: content, scale: 2).draw(in: content)
         }
@@ -484,6 +591,7 @@ private struct DrawingSurface: NSViewRepresentable {
     let width: CGFloat
     let isEraser: Bool
     let preciseEraser: Bool
+    let editingTextID: UUID?
 
     func makeNSView(context: Context) -> NoteDrawingView {
         view.wantsLayer = true
@@ -497,6 +605,58 @@ private struct DrawingSurface: NSViewRepresentable {
         nsView.inkWidth = width
         nsView.isEraser = isEraser
         nsView.preciseEraser = preciseEraser
+        nsView.editingTextID = editingTextID
+    }
+}
+
+// MARK: - Text size combo
+
+/// Editable combo box for a text object's size (type a value or pick a preset).
+private struct TextSizeCombo: NSViewRepresentable {
+    let size: CGFloat
+    let onChange: (CGFloat) -> Void
+
+    static let presets = [10, 12, 14, 18, 24, 30, 36, 48, 64, 96]
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let combo = NSComboBox()
+        combo.addItems(withObjectValues: Self.presets.map { "\($0)" })
+        combo.isEditable = true
+        combo.completes = true
+        combo.controlSize = .small
+        combo.font = .systemFont(ofSize: 12)
+        combo.delegate = context.coordinator
+        combo.stringValue = "\(Int(size))"
+        combo.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        context.coordinator.combo = combo
+        return combo
+    }
+
+    func updateNSView(_ nsView: NSComboBox, context: Context) {
+        context.coordinator.onChange = onChange
+        if nsView.currentEditor() == nil {          // don't clobber while typing
+            let text = "\(Int(size))"
+            if nsView.stringValue != text { nsView.stringValue = text }
+        }
+    }
+
+    final class Coordinator: NSObject, NSComboBoxDelegate {
+        var onChange: (CGFloat) -> Void
+        weak var combo: NSComboBox?
+        init(onChange: @escaping (CGFloat) -> Void) { self.onChange = onChange }
+
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let combo, combo.indexOfSelectedItem >= 0 else { return }
+            apply(combo.itemObjectValue(at: combo.indexOfSelectedItem) as? String)
+        }
+        func controlTextDidEndEditing(_ obj: Notification) { apply(combo?.stringValue) }
+
+        private func apply(_ text: String?) {
+            guard let text, let value = Double(text.trimmingCharacters(in: .whitespaces)), value > 0 else { return }
+            onChange(CGFloat(value))
+        }
     }
 }
 
@@ -558,6 +718,11 @@ struct DrawingEditorView: View {
     @State private var showFill = false
     @State private var showStroke = false
     @State private var showWidth = false
+    @State private var selectedText: EditableText?
+    @State private var editingText = false
+    @State private var showTextColor = false
+    @State private var showFontMenu = false
+    @FocusState private var textFocused: Bool
 
     private let widths: [CGFloat] = [2, 4, 8, 14, 22]
 
@@ -565,13 +730,36 @@ struct DrawingEditorView: View {
         ZStack {
             DrawingSurface(view: canvas,
                            inkType: brush.inkType, color: NSColor(color),
-                           width: widths[widthIndex], isEraser: isEraser, preciseEraser: preciseEraser)
+                           width: widths[widthIndex], isEraser: isEraser, preciseEraser: preciseEraser,
+                           editingTextID: editingText ? selectedText?.id : nil)
 
             // Floating shape toolbar, positioned beneath the selected shape.
             if let shape = selectedShape {
                 shapeToolbar(for: shape)
                     .position(x: min(max(shape.frame.midX, 140), 600),
                               y: shape.frame.maxY + 42)
+            }
+
+            // Text object: an editing field (when editing) + a formatting toolbar.
+            if let text = selectedText {
+                if editingText {
+                    TextEditor(text: Binding(get: { canvas.selectedTextString() },
+                                             set: { canvas.setSelectedTextString($0) }))
+                        .font(.system(size: text.fontSize,
+                                      weight: text.bold ? .bold : .regular)
+                            .italic(text.italic ? true : false))
+                        .foregroundColor(Color(nsColor: text.color))
+                        .multilineTextAlignment(textAlign(text.alignment))
+                        .scrollContentBackground(.hidden)
+                        .padding(2)
+                        .frame(width: text.frame.width, height: text.frame.height)
+                        .background(Color.black.opacity(0.06))
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: 1))
+                        .position(x: text.frame.midX, y: text.frame.midY)
+                        .focused($textFocused)
+                }
+                textToolbar(for: text)
+                    .position(x: min(max(text.frame.midX, 200), 600), y: text.frame.maxY + 70)
             }
 
             VStack(spacing: 0) {
@@ -582,7 +770,23 @@ struct DrawingEditorView: View {
             .padding(12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { canvas.onSelectionChange = { selectedShape = $0 } }
+        .onAppear {
+            canvas.onSelectionChange = { selectedShape = $0 }
+            canvas.onTextChange = { newText in
+                selectedText = newText
+                if newText == nil { editingText = false }
+            }
+            canvas.onEditText = { editingText = true; textFocused = true }
+        }
+        .onChange(of: editingText) { _, editing in if editing { textFocused = true } }
+    }
+
+    private func textAlign(_ a: NSTextAlignment) -> TextAlignment {
+        switch a {
+        case .center: return .center
+        case .right:  return .trailing
+        default:      return .leading
+        }
     }
 
     // MARK: Top bar
@@ -635,7 +839,7 @@ struct DrawingEditorView: View {
             .help(Loc.t("Kształty", "Shapes"))
             .popover(isPresented: $showShapes, arrowEdge: .top) { shapesPopover }
 
-            toolButton("character.textbox", help: Loc.t("Pole tekstowe (wkrótce)", "Text box (soon)")) {}
+            toolButton("character.textbox", help: Loc.t("Pole tekstowe", "Text box")) { canvas.addText() }
             toolButton("signature", help: Loc.t("Podpis (wkrótce)", "Signature (soon)")) {}
         }
         .padding(.horizontal, 10)
@@ -699,6 +903,78 @@ struct DrawingEditorView: View {
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(.quaternary, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+    }
+
+    // MARK: Text toolbar (under the selected text)
+
+    private func textToolbar(for text: EditableText) -> some View {
+        VStack(spacing: 6) {
+            // Row 1 — character styles + colour.
+            HStack(spacing: 4) {
+                textToggle("bold", on: text.bold) { canvas.mutateSelectedText { $0.bold.toggle() } }
+                textToggle("italic", on: text.italic) { canvas.mutateSelectedText { $0.italic.toggle() } }
+                textToggle("underline", on: text.underline) { canvas.mutateSelectedText { $0.underline.toggle() } }
+                textToggle("strikethrough", on: text.strike) { canvas.mutateSelectedText { $0.strike.toggle() } }
+                Divider().frame(height: 18)
+                Button { showTextColor = true } label: {
+                    Circle().fill(Color(nsColor: text.color)).frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showTextColor, arrowEdge: .bottom) {
+                    ColorPalettePopover(allowNoneLabel: Loc.t("Domyślny", "Default")) { picked in
+                        canvas.mutateSelectedText { $0.color = picked ?? .labelColor }
+                        showTextColor = false
+                    }
+                }
+            }
+            // Row 2 — size (type or pick) and font.
+            HStack(spacing: 4) {
+                TextSizeCombo(size: text.fontSize) { newSize in
+                    canvas.mutateSelectedText { $0.fontSize = newSize }
+                }
+                Divider().frame(height: 18)
+                Menu(text.fontName) {
+                    ForEach(drawingFontNames, id: \.self) { name in
+                        Button(name) { canvas.mutateSelectedText { $0.fontName = name } }
+                    }
+                }
+                .fixedSize()
+            }
+            // Row 3 — alignment.
+            HStack(spacing: 4) {
+                alignBtn("text.alignleft", .left, current: text.alignment)
+                alignBtn("text.aligncenter", .center, current: text.alignment)
+                alignBtn("text.alignright", .right, current: text.alignment)
+                Divider().frame(height: 18)
+                Button { canvas.deleteSelected() } label: { Image(systemName: "trash").frame(width: 24, height: 24) }
+                    .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+    }
+
+    private func textToggle(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .foregroundStyle(on ? Color.accentColor : Color.primary)
+                .frame(width: 26, height: 26)
+                .background(RoundedRectangle(cornerRadius: 6).fill(on ? Color.accentColor.opacity(0.2) : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func alignBtn(_ icon: String, _ a: NSTextAlignment, current: NSTextAlignment) -> some View {
+        Button { canvas.mutateSelectedText { $0.alignment = a } } label: {
+            Image(systemName: icon)
+                .foregroundStyle(current == a ? Color.accentColor : Color.primary)
+                .frame(width: 26, height: 26)
+                .background(RoundedRectangle(cornerRadius: 6).fill(current == a ? Color.accentColor.opacity(0.2) : .clear))
+        }
+        .buttonStyle(.plain)
     }
 
     private func swatch(_ color: NSColor?) -> some View {
