@@ -465,6 +465,14 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             storage.addAttributes(linkAttrs, range: range)
             storage.endEditing()
             textView.didChangeText()
+            // Collapse the caret past the link and clear the link typing attributes,
+            // so text typed next isn't part of the link.
+            textView.setSelectedRange(NSRange(location: range.location + range.length, length: 0))
+            var typing = textView.typingAttributes
+            typing[.link] = nil
+            typing[.underlineStyle] = nil
+            typing[.foregroundColor] = NSColor.labelColor
+            textView.typingAttributes = typing
         } else {
             // No selection: insert the URL itself as a clickable link.
             var attrs = linkAttrs
