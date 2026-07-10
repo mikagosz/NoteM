@@ -405,7 +405,7 @@ final class NotesModel {
     /// `richData` is the full-fidelity archive of the editor's attributed string;
     /// pass `nil` for markdown-only saves (quick capture, task completion), which
     /// clears any stale rich cache so display rebuilds from markdown.
-    func save(_ note: Note, content: String, richData: Data? = nil) {
+    func save(_ note: Note, content: String, richData: Data? = nil, referencedAttachments: Set<String>? = nil) {
         // Use the model's own copy for the authoritative folder path: the note
         // may have been moved by the categorization engine since the editor
         // loaded it, so the caller's `folderPath` can be stale.
@@ -423,6 +423,12 @@ final class NotesModel {
             rules: rulesProvider()
         ) {
             saved = store.moveNote(saved, toFolderPath: newFolderPath)
+        }
+
+        // Drop attachment files the user removed from the note (only when the
+        // caller supplied the still-referenced set, i.e. from the full editor).
+        if let referencedAttachments {
+            store.pruneAttachments(for: saved, keeping: referencedAttachments)
         }
 
         notes[index] = saved

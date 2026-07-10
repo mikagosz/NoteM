@@ -149,10 +149,22 @@ enum MarkdownStyler {
             if path.hasPrefix("attachments/"), let folder = noteFolder {
                 let fileURL = folder.appendingPathComponent(path)
                 if let image = NSImage(contentsOf: fileURL) {
-                    let attachment = NSTextAttachment()
-                    let cell = NSTextAttachmentCell(imageCell: image)
-                    attachment.attachmentCell = cell
-                    return NSAttributedString(attachment: attachment)
+                    // FittingTextAttachment clamps to the column width at layout time.
+                    let attachment = FittingTextAttachment()
+                    attachment.image = image
+                    // Carry the file's bytes in a fileWrapper so the image survives
+                    // being archived into note.rich: NSTextAttachment archives its
+                    // fileWrapper/contents, but NOT a bare `image`.
+                    if let wrapper = try? FileWrapper(url: fileURL) {
+                        wrapper.preferredFilename = fileURL.lastPathComponent
+                        attachment.fileWrapper = wrapper
+                    }
+                    let result = NSMutableAttributedString(attachment: attachment)
+                    // Remember which file this image is, for attachment pruning.
+                    result.addAttribute(.noteMAttachmentName,
+                                        value: fileURL.lastPathComponent,
+                                        range: NSRange(location: 0, length: result.length))
+                    return result
                 }
             }
         }
@@ -342,6 +354,22 @@ enum MarkdownStyler {
         let core = text.dropFirst(leading.count).dropLast(trailing.count)
         guard !core.isEmpty else { return text }
         return leading + marker + core + marker + trailing
+    }
+
+    /// Filenames referenced as `attachments/<name>` anywhere in the markdown —
+    /// covers image links `![](attachments/x)` and file links
+    /// `[label](attachments/x)`. Used to prune attachment files no longer
+    /// referenced by a note.
+    static func attachmentFilenames(inMarkdown markdown: String) -> [String] {
+        let ns = markdown as NSString
+        let regex = try! NSRegularExpression(pattern: "attachments/([^)\\n]+)")
+        var names: [String] = []
+        for match in regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
+            let name = ns.substring(with: match.range(at: 1))
+                .trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { names.append(name) }
+        }
+        return names
     }
 
     /// All wiki-link titles referenced in a raw markdown string, in order and

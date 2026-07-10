@@ -228,9 +228,26 @@ struct NoteDetailView: View {
         let markdown = MarkdownStyler.markdown(from: attributed)
         guard dirty || markdown != loadedMarkdown else { return }
         let richData = NoteRichArchive.data(from: attributed)
-        model.save(note, content: markdown, richData: richData)
+        let referenced = referencedAttachmentNames(in: attributed, markdown: markdown)
+        model.save(note, content: markdown, richData: richData, referencedAttachments: referenced)
         loadedMarkdown = markdown
         dirty = false
+    }
+
+    /// Names of attachment files the note still uses: inline image attachments
+    /// (tagged with their filename) plus any `attachments/…` paths written in the
+    /// markdown (file links). Files outside this set are pruned on save, so an
+    /// image removed from the note also leaves the "Załączniki" view.
+    private func referencedAttachmentNames(in attributed: NSAttributedString, markdown: String) -> Set<String> {
+        var names: Set<String> = []
+        attributed.enumerateAttribute(
+            .noteMAttachmentName,
+            in: NSRange(location: 0, length: attributed.length)
+        ) { value, _, _ in
+            if let name = value as? String { names.insert(name) }
+        }
+        for name in MarkdownStyler.attachmentFilenames(inMarkdown: markdown) { names.insert(name) }
+        return names
     }
 }
 

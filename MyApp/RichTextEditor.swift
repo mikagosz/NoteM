@@ -15,7 +15,16 @@ extension NSAttributedString.Key {
     /// missing the aspect ratio of the image is used.
     static let noteMImageWidth = NSAttributedString.Key("noteMImageWidth")
     static let noteMImageHeight = NSAttributedString.Key("noteMImageHeight")
+    /// Filename (inside the note's `attachments/` folder) that an inline image
+    /// attachment came from. Stored on the attachment character so it survives
+    /// archiving; used to prune attachment files the user removed from the note.
+    static let noteMAttachmentName = NSAttributedString.Key("noteMAttachmentName")
 }
+
+/// Marker subclass for NoteM's inline image attachments. It renders at its
+/// natural size (or an explicit resized `bounds`) — sizing to the window is done
+/// on demand via the "fit" button, not automatically.
+final class FittingTextAttachment: NSTextAttachment {}
 
 /// Lossless disk format for a note's attributed string: a keyed archive that
 /// preserves colours, fonts, sizes, inline images and NoteM's custom attributes.
@@ -107,9 +116,58 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         guard let textView, let storage = textView.textStorage else { return }
         isSettingText = true
         storage.setAttributedString(storedContent)
+        Self.normalizeImageAttachments(in: storage)
         Self.reapplyImageSizes(in: storage)
         textView.typingAttributes = MarkdownStyler.defaultTypingAttributes
         isSettingText = false
+    }
+
+    /// Makes every inline image display correctly and auto-fit the note width:
+    /// 1) rebuilds the `image` from the attachment's archived `fileWrapper`/
+    ///    `contents` when the live image was lost (NSTextAttachment archives the
+    ///    wrapper/contents, not a bare `image`) — this is what makes pasted /
+    ///    dropped images reappear after a note reloads from note.rich; and
+    /// 2) upgrades plain image attachments to `FittingTextAttachment`, so they
+    ///    clamp to the column width at layout time.
+    /// Checkbox attachments (their paragraph is tagged `.checklist`) and non-image
+    /// attachments are left untouched, so text formatting is never affected.
+    static func normalizeImageAttachments(in storage: NSTextStorage) {
+        let ns = storage.string as NSString
+        // Collect first; replacing the .attachment value while enumerating that
+        // same key could disturb the walk.
+        var replacements: [(range: NSRange, attachment: FittingTextAttachment)] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let old = value as? NSTextAttachment else { return }
+            let paragraphStart = ns.paragraphRange(for: NSRange(location: range.location, length: 0)).location
+            if storage.attribute(.checklist, at: paragraphStart, effectiveRange: nil) != nil { return }
+
+            // Find the image: prefer a live one, else rebuild from stored bytes.
+            var image = NoteTextView.image(of: old)
+            if image == nil, let data = old.fileWrapper?.regularFileContents ?? old.contents {
+                image = NSImage(data: data)
+            }
+            guard let image else { return }   // not an image attachment
+
+            // Already the right class and rendering via image? just ensure image.
+            if let fitting = old as? FittingTextAttachment {
+                fitting.image = image
+                fitting.attachmentCell = nil
+                return
+            }
+            let fitting = FittingTextAttachment()
+            fitting.fileWrapper = old.fileWrapper
+            fitting.contents = old.contents
+            fitting.fileType = old.fileType
+            fitting.bounds = old.bounds
+            fitting.image = image
+            replacements.append((range, fitting))
+        }
+        guard !replacements.isEmpty else { return }
+        storage.beginEditing()
+        for item in replacements {
+            storage.addAttribute(.attachment, value: item.attachment, range: item.range)
+        }
+        storage.endEditing()
     }
 
     /// Restores each resized image to its saved display width. `NSTextAttachment`
@@ -459,6 +517,9 @@ final class NoteTextView: NSTextView {
                 case "1": controller.toggleHeader(1); return true
                 case "2": controller.toggleHeader(2); return true
                 case "3": controller.toggleHeader(3); return true
+                // Cmd+O: fit the selected image to the window (only if one is
+                // selected & oversized; otherwise fall through to the default).
+                case "o": if fitSelectedImageToWindow() { return true }
                 default: break
                 }
             }
@@ -569,6 +630,8 @@ final class NoteTextView: NSTextView {
     /// Clicking a checklist's checkbox toggles its state (and autosaves) instead
     /// of moving the caret.
     override func mouseDown(with event: NSEvent) {
+        // Clicking the "fit to window" badge shrinks the selected image to fit.
+        if fitSelectedImageIfBadgeClicked(event) { return }
         // Dragging a handle of the already-selected image resizes it.
         if beginImageResizeIfHandleClicked(event) { return }
         // Pressing an image selects it and lets the user drag it to a new spot.
@@ -923,6 +986,69 @@ final class NoteTextView: NSTextView {
         return rect
     }
 
+    // MARK: - "Fit to window" badge
+
+    private static let fitBadgeSize: CGFloat = 24
+
+    /// Width an image is fitted to: the text column minus its insets (matching
+    /// the clamp used while manually resizing).
+    private var imageColumnWidth: CGFloat {
+        let container = textContainer?.size.width ?? bounds.width
+        return max(30, container - 2 * textContainerInset.width - 4)
+    }
+
+    /// The "fit to window" badge rect at a selected image's top-left corner, or
+    /// `nil` when the image already fits the column (so it appears only when useful).
+    private func fitBadgeRect(for imageRect: NSRect) -> NSRect? {
+        guard imageRect.width > imageColumnWidth + 1 else { return nil }
+        let size = Self.fitBadgeSize
+        return NSRect(x: imageRect.minX + 3, y: imageRect.minY + 3, width: size, height: size)
+    }
+
+    /// If the click landed on a selected, oversized image's "fit" badge, shrink
+    /// the image to the column width.
+    private func fitSelectedImageIfBadgeClicked(_ event: NSEvent) -> Bool {
+        guard let charRange = selectedImageRange,
+              charRange.location < (textStorage?.length ?? 0) else { return false }
+        let rect = imageRect(forCharacterRange: charRange)
+        guard let badge = fitBadgeRect(for: rect),
+              badge.contains(convert(event.locationInWindow, from: nil)) else { return false }
+        return fitSelectedImageToWindow()
+    }
+
+    /// Shrinks the currently selected image to the column width (keeping aspect
+    /// ratio) and registers undo. No-op unless an image is selected and it's
+    /// actually wider than the column. Driven by the "fit" badge and ⌘O.
+    @discardableResult
+    func fitSelectedImageToWindow() -> Bool {
+        guard let storage = textStorage,
+              let charRange = selectedImageRange,
+              charRange.location < storage.length,
+              let attachment = storage.attribute(.attachment, at: charRange.location, effectiveRange: nil) as? NSTextAttachment,
+              let image = Self.image(of: attachment), image.size.width > 0 else { return false }
+        let targetW = imageColumnWidth
+        let currentW = attachment.bounds.width > 0 ? attachment.bounds.width : image.size.width
+        let currentH = attachment.bounds.height > 0 ? attachment.bounds.height : image.size.height
+        guard currentW > targetW + 1 else { return false }   // already fits
+        let targetH = targetW * (currentH / currentW)
+        applyImageSize(range: charRange,
+                       bounds: CGRect(x: 0, y: 0, width: targetW, height: targetH),
+                       width: targetW, height: targetH)
+        needsDisplay = true
+        return true
+    }
+
+    /// Returns `image` tinted with `color` (used for the white badge glyph).
+    private static func tinted(_ image: NSImage, _ color: NSColor) -> NSImage {
+        let copy = image.copy() as! NSImage
+        copy.lockFocus()
+        color.set()
+        NSRect(origin: .zero, size: copy.size).fill(using: .sourceAtop)
+        copy.unlockFocus()
+        copy.isTemplate = false
+        return copy
+    }
+
     /// Draws the selection border and eight resize handles around the selected
     /// image (Word-style). Nothing is drawn when no image is selected.
     override func draw(_ dirtyRect: NSRect) {
@@ -953,6 +1079,23 @@ final class NoteTextView: NSTextView {
             NSColor.controlAccentColor.setStroke()
             path.lineWidth = 1.5
             path.stroke()
+        }
+
+        // "Fit to window" badge (top-left) when the image is wider than the column.
+        if let badge = fitBadgeRect(for: rect) {
+            let bg = NSBezierPath(roundedRect: badge, xRadius: 5, yRadius: 5)
+            NSColor.controlAccentColor.setFill()
+            bg.fill()
+            NSColor.white.setStroke()
+            bg.lineWidth = 1
+            bg.stroke()
+            if let icon = NSImage(systemSymbolName: "arrow.down.right.and.arrow.up.left",
+                                  accessibilityDescription: "Dopasuj do okna") {
+                let conf = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+                let glyph = Self.tinted(icon.withSymbolConfiguration(conf) ?? icon, .white)
+                glyph.draw(in: badge.insetBy(dx: 5, dy: 5), from: .zero,
+                           operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
         }
 
         // Drop-location caret while dragging the image to a new spot.
@@ -1104,12 +1247,41 @@ final class NoteTextView: NSTextView {
 
     // MARK: - Copy / Cut (write custom NoteM type for lossless round-trip)
 
+    /// AppKit disables Copy/Cut when the text selection is empty, so an image
+    /// selected only by click (which sets `selectedImageRange`, not the text
+    /// selection) couldn't be copied. Re-enable them in that case.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) || item.action == #selector(cut(_:)),
+           selectedImageRange != nil {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func copy(_ sender: Any?) {
+        // An image selected by click has no text selection — copy it directly
+        // (without moving the selection, which would pop the format panel).
+        if let imgRange = selectedImageRange, selectedRange().length == 0,
+           let storage = textStorage, imgRange.location + imgRange.length <= storage.length {
+            writeImageToPasteboard(storage.attributedSubstring(from: imgRange))
+            return
+        }
         super.copy(sender)
         writeNoteMType(for: selectedRange())
     }
 
     override func cut(_ sender: Any?) {
+        // Copy the click-selected image, then delete it.
+        if let imgRange = selectedImageRange, selectedRange().length == 0,
+           let storage = textStorage, imgRange.location + imgRange.length <= storage.length {
+            writeImageToPasteboard(storage.attributedSubstring(from: imgRange))
+            if shouldChangeText(in: imgRange, replacementString: "") {
+                storage.replaceCharacters(in: imgRange, with: "")
+                didChangeText()
+            }
+            selectedImageRange = nil
+            return
+        }
         // Capture before super deletes the selection
         let range = selectedRange()
         let saved: NSAttributedString? = range.length > 0
@@ -1119,6 +1291,18 @@ final class NoteTextView: NSTextView {
         if let attributed = saved {
             writeNoteMType(attributed)
         }
+    }
+
+    /// Puts an image (or any attributed piece) on the pasteboard as both NoteM's
+    /// lossless type and RTFD, so it pastes inside NoteM and into other apps.
+    private func writeImageToPasteboard(_ piece: NSAttributedString) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.declareTypes([.rtfd], owner: nil)
+        if let rtfd = piece.rtfd(from: NSRange(location: 0, length: piece.length), documentAttributes: [:]) {
+            pasteboard.setData(rtfd, forType: .rtfd)
+        }
+        writeNoteMType(piece)   // appends NoteM's lossless type
     }
 
     private func writeNoteMType(for range: NSRange) {
@@ -1146,6 +1330,7 @@ final class NoteTextView: NSTextView {
             unarchiver.requiresSecureCoding = false
             if let attributed = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString {
                 insertAttributed(attributed)
+                if let storage = textStorage { RichTextController.normalizeImageAttachments(in: storage) }
                 return
             }
         }
@@ -1206,14 +1391,21 @@ final class NoteTextView: NSTextView {
             if isImage, let folder = controller?.noteFolder {
                 let imageURL = folder.appendingPathComponent("attachments/\(filename)")
                 if let image = NSImage(contentsOf: imageURL) {
-                    let attachment = NSTextAttachment()
+                    // FittingTextAttachment clamps itself to the column width at
+                    // layout time, so no manual sizing is needed here.
+                    let attachment = FittingTextAttachment()
                     attachment.image = image
-                    let maxW: CGFloat = 480
-                    if image.size.width > maxW {
-                        let s = maxW / image.size.width
-                        attachment.bounds = CGRect(x: 0, y: 0, width: maxW, height: image.size.height * s)
+                    // Also carry the file's bytes so the image survives archiving
+                    // into note.rich — a bare `attachment.image` is NOT archived.
+                    if let wrapper = try? FileWrapper(url: imageURL) {
+                        wrapper.preferredFilename = filename
+                        attachment.fileWrapper = wrapper
                     }
-                    insertAttributed(NSAttributedString(attachment: attachment))
+                    let attributed = NSMutableAttributedString(attachment: attachment)
+                    let full = NSRange(location: 0, length: attributed.length)
+                    // Remember which file this image is, for attachment pruning.
+                    attributed.addAttribute(.noteMAttachmentName, value: filename, range: full)
+                    insertAttributed(attributed)
                     continue
                 }
             }
@@ -1239,6 +1431,9 @@ final class NoteTextView: NSTextView {
             }
         }
         insertAttributed(adapted)
+        // Upgrade any pasted images so they auto-fit the column; text formatting
+        // (colours, fonts, sizes) is left exactly as pasted.
+        if let storage = textStorage { RichTextController.normalizeImageAttachments(in: storage) }
     }
 
     /// True for near-white / near-black / grey colours (low saturation), which
@@ -1262,6 +1457,11 @@ struct RichTextEditor: NSViewRepresentable {
     let controller: RichTextController
     /// Black note background (with light text) when true, white (dark text) when false.
     var darkBackground: Bool = false
+
+    // Read the same UserDefaults keys AppSettings persists, so toggling them in
+    // Settings updates the editor live — in both the main note and quick capture.
+    @AppStorage(AppSettings.spellCheckKey) private var spellCheckEnabled = true
+    @AppStorage(AppSettings.autocorrectKey) private var autocorrectEnabled = false
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -1297,14 +1497,32 @@ struct RichTextEditor: NSViewRepresentable {
         scrollView.documentView = textView
         controller.attach(textView)
         applyBackground(to: scrollView, textView: textView)
+        applySpellChecking(to: textView)
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         // Content and formatting are driven imperatively through the controller;
-        // only the black/white background is reconciled here.
+        // the black/white background and spell-checking prefs are reconciled here.
         if let textView = nsView.documentView as? NoteTextView {
             applyBackground(to: nsView, textView: textView)
+            applySpellChecking(to: textView)
+        }
+    }
+
+    /// Turns spell checking (Polish dictionary, red underlines) and auto-correct
+    /// on/off per the user's settings. Applies to the main editor and quick
+    /// capture alike, since both use this view.
+    private func applySpellChecking(to textView: NSTextView) {
+        textView.isContinuousSpellCheckingEnabled = spellCheckEnabled
+        textView.isAutomaticSpellingCorrectionEnabled = spellCheckEnabled && autocorrectEnabled
+        textView.isGrammarCheckingEnabled = false
+        guard spellCheckEnabled else { return }
+        // Force the Polish dictionary if it's installed on this Mac.
+        let checker = NSSpellChecker.shared
+        if let polish = checker.availableLanguages.first(where: { $0.lowercased().hasPrefix("pl") }) {
+            checker.automaticallyIdentifiesLanguages = false
+            checker.setLanguage(polish)
         }
     }
 
