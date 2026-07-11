@@ -421,6 +421,8 @@ final class NoteStore {
 
     private func ensureRootExists() {
         try? fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        // Keep the iCloud sync folder out of the user's iCloud Drive view.
+        StorageLocation.hideICloudFolder(rootURL)
     }
 
     private func url(forFolderPath folderPath: String) -> URL {
