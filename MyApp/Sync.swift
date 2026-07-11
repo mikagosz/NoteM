@@ -26,6 +26,18 @@ enum StorageLocation {
         if syncEnabled, let iCloud = iCloudRoot { return iCloud }
         return localRoot
     }
+
+    /// Hides the store folder in Finder when it lives in iCloud Drive, so it
+    /// doesn't clutter the user's iCloud Drive. No-op for the local Documents
+    /// folder — we only hide the iCloud sync folder. The hidden flag is a local
+    /// filesystem attribute, so each Mac applies it to its own copy.
+    static func hideICloudFolder(_ url: URL) {
+        guard url.path.contains("Mobile Documents/com~apple~CloudDocs") else { return }
+        var url = url
+        var values = URLResourceValues()
+        values.isHidden = true
+        try? url.setResourceValues(values)
+    }
 }
 
 // MARK: - Notification name
