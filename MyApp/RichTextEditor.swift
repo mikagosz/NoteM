@@ -2137,7 +2137,9 @@ struct RichTextEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 8, height: 12)
+        // Height 26 keeps the first text line clear of the date header floating
+        // top-center (in both the main note and quick capture).
+        textView.textContainerInset = NSSize(width: 8, height: 26)
         textView.font = MarkdownStyler.bodyFont
         textView.textColor = NSColor.labelColor
         textView.typingAttributes = MarkdownStyler.defaultTypingAttributes

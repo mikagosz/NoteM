@@ -35,6 +35,16 @@ struct NoteDetailView: View {
         model.notes.first(where: { $0.id == note.id })?.isTaskList ?? note.isTaskList
     }
 
+    /// Weekday + full date + time in the app language, e.g.
+    /// "czwartek, 16 lipca 2026, 16:35" / "Thursday, July 16, 2026, 4:35 PM".
+    private func dateTimeHeader(_ now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: settings.language == .pl ? "pl_PL" : "en_US")
+        formatter.dateStyle = .full
+        formatter.timeStyle = .short
+        return formatter.string(from: now)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Hide the tag bar while drawing so the drawing controls don't overlap it.
@@ -49,6 +59,19 @@ struct NoteDetailView: View {
                 Divider()
             }
             RichTextEditor(controller: controller, darkBackground: darkBackground)
+                // Day + date + live clock — top-center, hidden while drawing;
+                // informational only, so it never steals clicks from the text.
+                .overlay(alignment: .top) {
+                    if !showDrawing {
+                        TimelineView(.everyMinute) { context in
+                            Text(dateTimeHeader(context.date))
+                                .font(.caption)
+                                .foregroundStyle(darkBackground ? Color.white.opacity(0.7) : Color.black.opacity(0.5))
+                                .padding(.top, 6)
+                        }
+                        .allowsHitTesting(false)
+                    }
+                }
 
             let backlinks = model.backlinks(to: note)
             if !backlinks.isEmpty {
