@@ -35,6 +35,13 @@ struct NoteDetailView: View {
         model.notes.first(where: { $0.id == note.id })?.isTaskList ?? note.isTaskList
     }
 
+    /// Live OCR metadata read from the model (the passed-in `note` is a snapshot).
+    private var liveOCRTexts: [String: String] {
+        model.notes.first(where: { $0.id == note.id })?.ocrTexts ?? note.ocrTexts
+    }
+    /// Whether the temporary OCR-test popover is showing.
+    @State private var showOCRTest = false
+
     /// Weekday + full date + time in the app language, e.g.
     /// "czwartek, 16 lipca 2026, 16:35" / "Thursday, July 16, 2026, 4:35 PM".
     private func dateTimeHeader(_ now: Date) -> String {
@@ -120,6 +127,19 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Szukaj w notatce (⌘F)", "Find in note (⌘F)"))
+            }
+            // TYMCZASOWY przycisk testowy (Zadanie 2.1) — podgląd ukrytych
+            // metadanych OCR; docelowe UI powstanie w Zadaniu 2.3.
+            ToolbarItem(placement: .automatic) {
+                Button { showOCRTest = true } label: {
+                    Label("OCR (test)", systemImage: "text.viewfinder")
+                        .foregroundStyle(accent)
+                }
+                .help(settings.t("Pokaż tekst rozpoznany w obrazach tej notatki (test)",
+                                 "Show text recognized in this note's images (test)"))
+                .popover(isPresented: $showOCRTest) {
+                    OCRTestPopover(texts: liveOCRTexts, settings: settings)
+                }
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.toggleTaskList(note) } label: {
@@ -298,6 +318,46 @@ struct NoteDetailView: View {
         }
         for name in MarkdownStyler.attachmentFilenames(inMarkdown: markdown) { names.insert(name) }
         return names
+    }
+}
+
+/// TYMCZASOWY podgląd metadanych OCR (Zadanie 2.1): co Vision rozpoznało w
+/// obrazach tej notatki. Zastąpi go docelowe UI w Zadaniu 2.3.
+private struct OCRTestPopover: View {
+    let texts: [String: String]
+    let settings: AppSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.t("Rozpoznany tekst (OCR)", "Recognized text (OCR)"))
+                .font(.headline)
+            if texts.isEmpty {
+                Text(settings.t("Brak danych OCR. Wklej lub dodaj obraz z tekstem i chwilę poczekaj.",
+                                "No OCR data. Paste or add an image with text and wait a moment."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(texts.keys.sorted(), id: \.self) { name in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name)
+                                    .font(.caption.bold())
+                                Text(texts[name]!.isEmpty
+                                     ? settings.t("(nie rozpoznano tekstu)", "(no text recognized)")
+                                     : texts[name]!)
+                                    .font(.caption)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+        .padding(14)
+        .frame(width: 340)
     }
 }
 

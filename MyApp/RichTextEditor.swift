@@ -2014,7 +2014,34 @@ final class NoteTextView: NSTextView {
             return
         }
 
+        // Raw bitmap (e.g. a screenshot copied with ⌘⇧⌃4): save it as a real
+        // attachments/ file so it shows up in "Załączniki" and OCR can index
+        // it (Zadanie 2.1). Falls through to the default embedded paste when
+        // there's no note to attach to (quick capture).
+        if insertPastedImage(from: pasteboard) { return }
+
         super.paste(sender)
+    }
+
+    /// Saves a pasted raw image as a file in the note's `attachments/` folder
+    /// and inserts it inline. Returns `false` when the pasteboard has no image
+    /// or no note folder is available.
+    private func insertPastedImage(from pasteboard: NSPasteboard) -> Bool {
+        guard controller?.onAddAttachment != nil else { return false }
+        let png = pasteboard.data(forType: .png)
+            ?? pasteboard.data(forType: .tiff).flatMap {
+                NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:])
+            }
+        guard let png else { return false }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH.mm.ss"
+        let name = "obraz-\(formatter.string(from: Date())).png"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        guard (try? png.write(to: tempURL)) != nil else { return false }
+        insertAttachments(from: [tempURL])
+        try? FileManager.default.removeItem(at: tempURL)
+        return true
     }
 
     // MARK: - Drag & drop (attachments)

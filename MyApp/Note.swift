@@ -30,6 +30,9 @@ struct Note: Identifiable, Equatable {
     /// The `folderPath` the note lived at before being trashed, so it can be
     /// restored to the same place. `nil` for active notes.
     var originalFolderPath: String?
+    /// Text recognized (OCR) in image attachments, keyed by the filename inside
+    /// `attachments/`. Hidden metadata — never inserted into the note content.
+    var ocrTexts: [String: String]
 
     init(
         id: UUID = UUID(),
@@ -44,7 +47,8 @@ struct Note: Identifiable, Equatable {
         isTaskList: Bool = false,
         taskDone: Bool = false,
         deletedAt: Date? = nil,
-        originalFolderPath: String? = nil
+        originalFolderPath: String? = nil,
+        ocrTexts: [String: String] = [:]
     ) {
         self.id = id
         self.title = title
@@ -59,6 +63,7 @@ struct Note: Identifiable, Equatable {
         self.taskDone = taskDone
         self.deletedAt = deletedAt
         self.originalFolderPath = originalFolderPath
+        self.ocrTexts = ocrTexts
     }
 }
 
@@ -83,6 +88,9 @@ struct NoteMeta: Codable {
     /// Trash bookkeeping; absent in the metadata of active notes.
     var deletedAt: Date?
     var originalFolderPath: String?
+    /// OCR text per image attachment filename. Optional so older `meta.json`
+    /// files still decode (missing ⇒ nothing recognized yet).
+    var ocrTexts: [String: String]?
 }
 
 extension Note {
@@ -100,7 +108,8 @@ extension Note {
             isTaskList: isTaskList,
             taskDone: taskDone,
             deletedAt: deletedAt,
-            originalFolderPath: originalFolderPath
+            originalFolderPath: originalFolderPath,
+            ocrTexts: ocrTexts.isEmpty ? nil : ocrTexts
         )
     }
 
@@ -120,7 +129,8 @@ extension Note {
             isTaskList: meta.isTaskList ?? false,
             taskDone: meta.taskDone ?? false,
             deletedAt: meta.deletedAt,
-            originalFolderPath: meta.originalFolderPath
+            originalFolderPath: meta.originalFolderPath,
+            ocrTexts: meta.ocrTexts ?? [:]
         )
     }
 }
