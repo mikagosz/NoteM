@@ -456,6 +456,8 @@ struct ContentView: View {
     @State private var noteFilter: NoteListFilter?
     /// Whether the conflict-resolution sheet is showing.
     @State private var showConflicts = false
+    /// Whether the link-graph sheet is showing (Zadanie 1.3).
+    @State private var showGraph = false
 
     /// True when a note is open in the detail pane (its own toolbar then shows
     /// the settings gear, so ContentView omits it to avoid a duplicate).
@@ -716,6 +718,16 @@ struct ContentView: View {
                     .labelStyle(.titleAndIcon)
                     .help(settings.t("Nowa notatka", "New note"))
                 }
+                // TYMCZASOWY przycisk testowy (Zadanie 1.3) — po weryfikacji
+                // zdecydujemy o stałym miejscu wejścia do grafu.
+                ToolbarItem(placement: .navigation) {
+                    Button { showGraph = true } label: {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .foregroundStyle(settings.theme.accent)
+                    }
+                    .help(settings.t("Graf połączeń między notatkami (test)",
+                                     "Note link graph (test)"))
+                }
             }
         } detail: {
             Group {
@@ -774,6 +786,18 @@ struct ContentView: View {
             }
         }
         .tint(settings.theme.accent)
+        .sheet(isPresented: $showGraph) {
+            GraphView(
+                model: model,
+                settings: settings,
+                accent: settings.theme.accent,
+                openNote: { id in
+                    showGraph = false
+                    selection = .note(id)
+                },
+                onClose: { showGraph = false }
+            )
+        }
     }
 
     private func addNote() {
