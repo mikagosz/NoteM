@@ -400,9 +400,28 @@ struct QuickCaptureView: View {
     /// When on, the saved note is flagged as a planned task list.
     @State private var isTaskList = false
 
+    /// Weekday + full date at the moment the note opened, in the app language,
+    /// e.g. "czwartek, 16 lipca 2026" / "Thursday, July 16, 2026".
+    private var dateHeader: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: Loc.language == .pl ? "pl_PL" : "en_US")
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
+        return formatter.string(from: Date())
+    }
+
     var body: some View {
         RichTextEditor(controller: controller, darkBackground: darkBackground)
             .frame(width: 360, height: 400)
+            // Day + date header — top-center, purely informational, so it never
+            // steals clicks from the text underneath.
+            .overlay(alignment: .top) {
+                Text(dateHeader)
+                    .font(.caption)
+                    .foregroundStyle(darkBackground ? Color.white.opacity(0.7) : Color.black.opacity(0.5))
+                    .padding(.top, 6)
+                    .allowsHitTesting(false)
+            }
             // Close (discard) button — bottom-left.
             .overlay(alignment: .bottomLeading) {
                 Button(Loc.t("Zamknij", "Close")) { onClose() }
@@ -449,6 +468,19 @@ struct QuickCaptureView: View {
                 .padding(.trailing, 10)
                 .padding(.bottom, 10)
             }
+            // Drag handle — bottom-center ellipsis. The text editor swallows mouse
+            // drags everywhere else, so this is the one spot to grab the note
+            // and move it around the desktop.
+            .overlay(alignment: .bottom) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(darkBackground ? Color.white.opacity(0.7) : Color.black.opacity(0.5))
+                    .frame(width: 44, height: 20)
+                    .contentShape(Rectangle())
+                    .overlay(WindowDragHandle())
+                    .help(Loc.t("Przeciągnij, aby przesunąć notatkę", "Drag to move the note"))
+                    .padding(.bottom, 4)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .onAppear {
                 controller.setContent(
@@ -473,6 +505,25 @@ struct QuickCaptureView: View {
             onSave(markdown, richData, isTaskList)
         }
         onClose()
+    }
+}
+
+/// Invisible AppKit layer under the ellipsis handle: on mouse-down it starts a
+/// native window drag (`performDrag`), so the borderless quick-note panel moves
+/// exactly like a titled window — smoothly, with screen-edge snapping.
+struct WindowDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragView { DragView() }
+    func updateNSView(_ nsView: DragView, context: Context) {}
+
+    final class DragView: NSView {
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+
+        // Open-hand cursor so the handle reads as "grabbable".
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .openHand)
+        }
     }
 }
 
