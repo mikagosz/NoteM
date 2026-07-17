@@ -1472,7 +1472,14 @@ struct StartView: View {
             note.title.lowercased().contains(q)
                 || note.tags.contains { $0.lowercased().contains(q) }
                 || (contentIndex[note.id]?.lowercased().contains(q) ?? false)
+                || ocrMatches(note, query: q)
         }
+    }
+
+    /// True when the query occurs in text recognised from the note's images
+    /// (OCR, Zadanie 2.2). Query must already be trimmed and lowercased.
+    private func ocrMatches(_ note: Note, query q: String) -> Bool {
+        note.ocrTexts.values.contains { $0.lowercased().contains(q) }
     }
 
     /// Results split into date buckets: today, yesterday, last 7 days, older.
@@ -1638,9 +1645,10 @@ struct StartView: View {
     // MARK: - Reusable pieces
 
     private func card(for note: Note) -> some View {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         // Open on tap via a gesture (not a wrapping Button) so the task-list
         // toggle button inside the card reliably gets its own clicks on macOS.
-        NoteCard(
+        return NoteCard(
             note: note,
             settings: settings,
             accent: accent,
@@ -1648,6 +1656,7 @@ struct StartView: View {
             snippet: contentIndex[note.id] ?? "",
             query: query,
             isTaskList: note.isTaskList,
+            ocrMatch: !q.isEmpty && ocrMatches(note, query: q),
             onToggleTaskList: { model.toggleTaskList(note) }
         )
         .contentShape(Rectangle())
@@ -1718,6 +1727,9 @@ struct NoteCard: View {
     var query: String = ""
     /// Whether the note is flagged as a planned task list.
     var isTaskList: Bool = false
+    /// True when the search hit comes from text recognised in an image
+    /// (OCR, Zadanie 2.2) — shows a small image badge on the card.
+    var ocrMatch: Bool = false
     /// Toggles the task-list flag (button on the card); no-op by default.
     var onToggleTaskList: () -> Void = {}
 
@@ -1753,6 +1765,13 @@ struct NoteCard: View {
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
+                    if ocrMatch {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.caption)
+                            .foregroundStyle(accent)
+                            .help(settings.t("Trafienie w tekście z obrazu (OCR)",
+                                             "Match in text from an image (OCR)"))
+                    }
                     if note.pinned {
                         Image(systemName: "pin.fill")
                             .font(.caption)
