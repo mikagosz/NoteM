@@ -50,40 +50,7 @@ final class NotesModel {
     func addAttachment(fileURL: URL, to note: Note) -> String? {
         let filename = store.addAttachment(fileURL: fileURL, toNote: note)
         rebuildAttachments()
-        if let filename { scheduleOCR(filename: filename, noteID: note.id) }
         return filename
-    }
-
-    // MARK: - OCR (Zadanie 2.1)
-
-    /// Runs Vision text recognition on a freshly added image attachment and
-    /// stores the result in the note's metadata. Fire-and-forget: recognition
-    /// awaits off the main thread, only the metadata update comes back here.
-    private func scheduleOCR(filename: String, noteID: UUID) {
-        guard ImageOCR.isSupportedImage(filename) else { return }
-        guard let note = notes.first(where: { $0.id == noteID }) else { return }
-        let fileURL = store.folderURL(for: note)
-            .appendingPathComponent("attachments/\(filename)")
-        Task { [weak self] in
-            guard let text = await ImageOCR.recognizeText(in: fileURL) else { return }
-            self?.applyOCR(text: text, filename: filename, noteID: noteID)
-        }
-    }
-
-    /// Stores a manual correction of the recognized text, made by the user in
-    /// the OCR panel (Zadanie 2.3).
-    func setOCRText(_ text: String, filename: String, for note: Note) {
-        applyOCR(text: text, filename: filename, noteID: note.id)
-    }
-
-    /// Writes the recognized text into the note's `meta.json` (hidden metadata —
-    /// the note content is never touched).
-    private func applyOCR(text: String, filename: String, noteID: UUID) {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
-        var note = notes[index]
-        guard note.ocrTexts[filename] != text else { return }
-        note.ocrTexts[filename] = text
-        notes[index] = store.updateMeta(note)
     }
 
     /// Supplies the trash auto-clean window (days). Set by the UI from settings.
