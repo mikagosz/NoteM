@@ -2015,9 +2015,9 @@ final class NoteTextView: NSTextView {
         }
 
         // Raw bitmap (e.g. a screenshot copied with ⌘⇧⌃4): save it as a real
-        // attachments/ file so it shows up in "Załączniki" and OCR can index
-        // it (Zadanie 2.1). Falls through to the default embedded paste when
-        // there's no note to attach to (quick capture).
+        // attachments/ file so it shows up in "Załączniki". Falls through to
+        // the default embedded paste when there's no note to attach to (quick
+        // capture).
         if insertPastedImage(from: pasteboard) { return }
 
         super.paste(sender)
