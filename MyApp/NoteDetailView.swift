@@ -39,8 +39,8 @@ struct NoteDetailView: View {
     private var liveOCRTexts: [String: String] {
         model.notes.first(where: { $0.id == note.id })?.ocrTexts ?? note.ocrTexts
     }
-    /// Whether the temporary OCR-test popover is showing.
-    @State private var showOCRTest = false
+    /// Whether the OCR panel (recognized image text) is showing.
+    @State private var showOCRPanel = false
 
     /// Weekday + full date + time in the app language, e.g.
     /// "czwartek, 16 lipca 2026, 16:35" / "Thursday, July 16, 2026, 4:35 PM".
@@ -128,17 +128,29 @@ struct NoteDetailView: View {
                 }
                 .help(settings.t("Szukaj w notatce (⌘F)", "Find in note (⌘F)"))
             }
-            // TYMCZASOWY przycisk testowy (Zadanie 2.1) — podgląd ukrytych
-            // metadanych OCR; docelowe UI powstanie w Zadaniu 2.3.
+            // Tekst rozpoznany w obrazach notatki (OCR): podgląd, ręczna
+            // korekta i wstawianie do treści (Zadanie 2.3).
             ToolbarItem(placement: .automatic) {
-                Button { showOCRTest = true } label: {
-                    Label("OCR (test)", systemImage: "text.viewfinder")
+                Button { showOCRPanel = true } label: {
+                    Label(settings.t("Tekst z obrazów (OCR)", "Text from images (OCR)"),
+                          systemImage: "text.viewfinder")
                         .foregroundStyle(accent)
                 }
-                .help(settings.t("Pokaż tekst rozpoznany w obrazach tej notatki (test)",
-                                 "Show text recognized in this note's images (test)"))
-                .popover(isPresented: $showOCRTest) {
-                    OCRTestPopover(texts: liveOCRTexts, settings: settings)
+                .help(settings.t("Pokaż tekst rozpoznany w obrazach tej notatki — możesz go poprawić i wstawić do treści",
+                                 "Show text recognized in this note's images — review it and insert it into the note"))
+                .popover(isPresented: $showOCRPanel) {
+                    OCRPanel(
+                        texts: liveOCRTexts,
+                        settings: settings,
+                        accent: accent,
+                        onSave: { filename, text in
+                            model.setOCRText(text, filename: filename, for: note)
+                        },
+                        onInsert: { text in
+                            showOCRPanel = false
+                            insertOCRText(text)
+                        }
+                    )
                 }
             }
             ToolbarItem(placement: .automatic) {
@@ -240,6 +252,14 @@ struct NoteDetailView: View {
         }
     }
 
+    /// Inserts recognized (OCR) text at the caret — a deliberate user action
+    /// from the OCR panel, never an automatic one (Zadanie 2.3).
+    private func insertOCRText(_ text: String) {
+        guard let textView = controller.textView else { return }
+        textView.window?.makeFirstResponder(textView)
+        textView.insertText("\n" + text + "\n", replacementRange: textView.selectedRange())
+    }
+
     private func exportToPDF() {
         flush()
         guard let textView = controller.textView else { return }
@@ -321,43 +341,112 @@ struct NoteDetailView: View {
     }
 }
 
-/// TYMCZASOWY podgląd metadanych OCR (Zadanie 2.1): co Vision rozpoznało w
-/// obrazach tej notatki. Zastąpi go docelowe UI w Zadaniu 2.3.
-private struct OCRTestPopover: View {
+/// Tekst rozpoznany w obrazach notatki (Zadanie 2.3): podgląd per obraz,
+/// ręczna korekta zapisywana do `meta.json` i wstawianie do treści notatki
+/// (zawsze świadoma decyzja użytkownika, nigdy automat).
+private struct OCRPanel: View {
     let texts: [String: String]
     let settings: AppSettings
+    var accent: Color = .accentColor
+    /// Saves a manual correction: (filename, corrected text).
+    let onSave: (String, String) -> Void
+    /// Inserts the given text into the note at the caret.
+    let onInsert: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(settings.t("Rozpoznany tekst (OCR)", "Recognized text (OCR)"))
+            Text(settings.t("Tekst rozpoznany w obrazach (OCR)", "Text recognized in images (OCR)"))
                 .font(.headline)
             if texts.isEmpty {
-                Text(settings.t("Brak danych OCR. Wklej lub dodaj obraz z tekstem i chwilę poczekaj.",
-                                "No OCR data. Paste or add an image with text and wait a moment."))
+                Text(settings.t("Brak obrazów z rozpoznanym tekstem. Wklej (⌘V) lub przeciągnij obraz z tekstem do notatki i odczekaj chwilę.",
+                                "No images with recognized text. Paste (⌘V) or drag an image with text into the note and wait a moment."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 14) {
                         ForEach(texts.keys.sorted(), id: \.self) { name in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(name)
-                                    .font(.caption.bold())
-                                Text(texts[name]!.isEmpty
-                                     ? settings.t("(nie rozpoznano tekstu)", "(no text recognized)")
-                                     : texts[name]!)
-                                    .font(.caption)
-                                    .textSelection(.enabled)
-                            }
+                            OCREntryRow(
+                                name: name,
+                                text: texts[name] ?? "",
+                                settings: settings,
+                                accent: accent,
+                                onSave: { onSave(name, $0) },
+                                onInsert: onInsert
+                            )
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 260)
+                .frame(maxHeight: 380)
             }
         }
         .padding(14)
-        .frame(width: 340)
+        .frame(width: 380)
+    }
+}
+
+/// One image's recognized text: editable field + save / insert actions.
+private struct OCREntryRow: View {
+    let name: String
+    /// Text currently stored in the note's metadata.
+    private let stored: String
+    let settings: AppSettings
+    var accent: Color = .accentColor
+    let onSave: (String) -> Void
+    let onInsert: (String) -> Void
+
+    /// Editable copy; diverges from `stored` until the user saves.
+    @State private var draft: String
+
+    init(name: String, text: String, settings: AppSettings, accent: Color,
+         onSave: @escaping (String) -> Void, onInsert: @escaping (String) -> Void) {
+        self.name = name
+        self.stored = text
+        self.settings = settings
+        self.accent = accent
+        self.onSave = onSave
+        self.onInsert = onInsert
+        _draft = State(initialValue: text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(name)
+                .font(.caption.bold())
+            if stored.isEmpty && draft.isEmpty {
+                Text(settings.t("(nie rozpoznano tekstu w tym obrazie)", "(no text recognized in this image)"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .frame(minHeight: 70, maxHeight: 150)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                HStack(spacing: 10) {
+                    Button {
+                        onInsert(draft)
+                    } label: {
+                        Label(settings.t("Wstaw do notatki", "Insert into note"),
+                              systemImage: "text.insert")
+                    }
+                    .help(settings.t("Wstawia ten tekst w miejscu kursora w notatce",
+                                     "Inserts this text at the caret in the note"))
+                    if draft != stored {
+                        Button {
+                            onSave(draft)
+                        } label: {
+                            Label(settings.t("Zapisz poprawkę", "Save correction"),
+                                  systemImage: "checkmark.circle")
+                        }
+                        .help(settings.t("Zapisuje poprawiony tekst (będzie używany w wyszukiwaniu)",
+                                         "Saves the corrected text (used by search)"))
+                    }
+                }
+                .font(.caption)
+                .tint(accent)
+            }
+        }
     }
 }
 
