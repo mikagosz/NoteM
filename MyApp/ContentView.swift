@@ -265,6 +265,7 @@ private struct GeneralSettingsView: View {
                 Shortcut(keys: "⌘⇧L", title: settings.t("Lista zadań (checklista)", "Checklist"))
             ]),
             Group(name: settings.t("Notatka", "Note"), shortcuts: [
+                Shortcut(keys: "⌘K", title: settings.t("Paleta poleceń", "Command palette")),
                 Shortcut(keys: "⌘F", title: settings.t("Szukaj w notatce", "Find in note")),
                 Shortcut(keys: "⌘Z", title: settings.t("Cofnij", "Undo")),
                 Shortcut(keys: "⌘⇧Z", title: settings.t("Ponów", "Redo")),
@@ -456,6 +457,8 @@ struct ContentView: View {
     @State private var noteFilter: NoteListFilter?
     /// Whether the conflict-resolution sheet is showing.
     @State private var showConflicts = false
+    /// Whether the command palette (⌘K) is showing.
+    @State private var showPalette = false
 
     /// True when a note is open in the detail pane (its own toolbar then shows
     /// the settings gear, so ContentView omits it to avoid a duplicate).
@@ -774,6 +777,91 @@ struct ContentView: View {
             }
         }
         .tint(settings.theme.accent)
+        // Hidden button so ⌘K works anywhere in the window (Priorytet 5).
+        .background(
+            Button("") { showPalette.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
+        )
+        .overlay {
+            if showPalette {
+                CommandPaletteOverlay(
+                    settings: settings,
+                    accent: settings.theme.accent,
+                    items: paletteItems,
+                    onClose: { showPalette = false }
+                )
+            }
+        }
+    }
+
+    /// Actions offered by the ⌘K palette: global commands, contextual commands
+    /// for the open note, then every note as a jump target (fuzzy-filtered).
+    private var paletteItems: [CommandPaletteItem] {
+        var items: [CommandPaletteItem] = []
+        items.append(CommandPaletteItem(
+            id: "new-note",
+            title: settings.t("Nowa notatka", "New note"),
+            icon: "square.and.pencil"
+        ) { addNote() })
+        items.append(CommandPaletteItem(
+            id: "go-home",
+            title: settings.t("Przejdź: Start", "Go to: Start"),
+            icon: "house"
+        ) { noteFilter = nil; selection = .home })
+        items.append(CommandPaletteItem(
+            id: "go-tasks",
+            title: settings.t("Przejdź: Zadania", "Go to: Tasks"),
+            icon: "checklist"
+        ) { noteFilter = nil; selection = .tasks })
+        items.append(CommandPaletteItem(
+            id: "go-attachments",
+            title: settings.t("Przejdź: Załączniki", "Go to: Attachments"),
+            icon: "paperclip"
+        ) { noteFilter = nil; selection = .attachments })
+        items.append(CommandPaletteItem(
+            id: "go-trash",
+            title: settings.t("Przejdź: Kosz", "Go to: Trash"),
+            icon: "trash"
+        ) { noteFilter = nil; selection = .trash })
+
+        // Contextual commands for the currently open note.
+        if case .note(let id) = selection, let note = model.notes.first(where: { $0.id == id }) {
+            items.append(CommandPaletteItem(
+                id: "note-pin",
+                title: note.pinned ? settings.t("Odepnij notatkę", "Unpin note")
+                                   : settings.t("Przypnij notatkę", "Pin note"),
+                subtitle: note.title,
+                icon: note.pinned ? "pin.slash" : "pin"
+            ) { model.togglePin(note) })
+            items.append(CommandPaletteItem(
+                id: "note-tasklist",
+                title: note.isTaskList ? settings.t("Usuń z zadań", "Remove from tasks")
+                                       : settings.t("Oznacz jako listę zadań", "Mark as task list"),
+                subtitle: note.title,
+                icon: note.isTaskList ? "checklist.checked" : "checklist"
+            ) { model.toggleTaskList(note) })
+        }
+
+        items.append(CommandPaletteItem(
+            id: "open-settings",
+            title: settings.t("Otwórz ustawienia", "Open settings"),
+            icon: "gear"
+        ) { openSettings() })
+
+        // Jump to any note by (fuzzy) title.
+        for note in model.notes where !note.title.isEmpty {
+            let category = model.category(of: note)
+            items.append(CommandPaletteItem(
+                id: "note-\(note.id.uuidString)",
+                title: note.title,
+                subtitle: category.isEmpty ? settings.t("Notatka", "Note") : category,
+                icon: "note.text",
+                isNote: true
+            ) { noteFilter = nil; selection = .note(note.id) })
+        }
+        return items
     }
 
     private func addNote() {
