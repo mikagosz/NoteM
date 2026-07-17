@@ -1545,6 +1545,11 @@ struct StartView: View {
     let openNote: (UUID) -> Void
 
     @State private var query = ""
+    /// Search mode: false = exact text match, true = semantic ("by meaning",
+    /// Priorytet 3) via the on-device embedding index.
+    @State private var semanticMode = false
+    /// Note ids ranked by semantic closeness to the current query, best first.
+    @State private var semanticResults: [UUID] = []
     /// Note contents, cached once so search and previews don't re-read files on
     /// every keystroke.
     @State private var contentIndex: [UUID: String] = [:]
@@ -1556,6 +1561,12 @@ struct StartView: View {
     private var results: [Note] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return model.notes }
+        if semanticMode {
+            let byID = Dictionary(uniqueKeysWithValues: model.notes.map { ($0.id, $0) })
+            let ranked = semanticResults.compactMap { byID[$0] }
+            // Empty ⇒ model unavailable or still computing — fall back to exact.
+            if !ranked.isEmpty { return ranked }
+        }
         return model.notes.filter { note in
             note.title.lowercased().contains(q)
                 || note.tags.contains { $0.lowercased().contains(q) }
@@ -1564,8 +1575,12 @@ struct StartView: View {
     }
 
     /// Results split into date buckets: today, yesterday, last 7 days, older.
-    /// Empty buckets are omitted.
+    /// Empty buckets are omitted. In semantic mode the ranking IS the order,
+    /// so results stay in one section instead of being re-bucketed by date.
     private var sections: [(title: String, notes: [Note])] {
+        if semanticMode, !query.trimmingCharacters(in: .whitespaces).isEmpty, !semanticResults.isEmpty {
+            return [(settings.t("Najlepsze dopasowania", "Best matches"), results)]
+        }
         let cal = Calendar.current
         let weekAgo = cal.date(byAdding: .day, value: -7, to: cal.startOfDay(for: Date()))
         var today: [Note] = [], yesterday: [Note] = [], week: [Note] = [], older: [Note] = []
@@ -1609,6 +1624,19 @@ struct StartView: View {
         .navigationTitle(settings.t("Start", "Start"))
         .onAppear { buildIndex() }
         .onChange(of: model.notes.count) { buildIndex() }
+        // Recompute the semantic ranking as the query / mode changes; the short
+        // sleep debounces typing so the model isn't queried per keystroke.
+        .task(id: "\(semanticMode)|\(query)") {
+            guard semanticMode else { return }
+            let q = query.trimmingCharacters(in: .whitespaces)
+            guard !q.isEmpty else {
+                semanticResults = []
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            semanticResults = await model.semanticIndex.search(q)
+        }
     }
 
     // MARK: - Search bar
@@ -1627,6 +1655,15 @@ struct StartView: View {
                 .buttonStyle(.plain)
                 .help(settings.t("Wyczyść", "Clear"))
             }
+            // Search mode: exact text vs. semantic similarity (Priorytet 3).
+            Picker("", selection: $semanticMode) {
+                Text(settings.t("Dokładnie", "Exact")).tag(false)
+                Text(settings.t("Znaczeniowo", "By meaning")).tag(true)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            .help(settings.t("„Znaczeniowo” znajduje notatki o podobnym sensie, nawet gdy nie zawierają wpisanych słów",
+                             "“By meaning” finds notes about similar things, even without the exact words"))
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.4)))
@@ -1748,6 +1785,12 @@ struct StartView: View {
             index[note.id] = model.content(for: note)
         }
         contentIndex = index
+
+        // Refresh semantic vectors in the background; the index skips notes
+        // whose content hash hasn't changed, so this is cheap when idle.
+        let items = model.notes.map { (id: $0.id, text: $0.title + "\n" + (index[$0.id] ?? "")) }
+        let semanticIndex = model.semanticIndex
+        Task { await semanticIndex.reindex(items) }
     }
 }
 

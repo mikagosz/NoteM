@@ -22,6 +22,10 @@ struct TaskItem: Identifiable, Hashable {
 final class NotesModel {
     private var store = NoteStore()
 
+    /// Indeks semantyczny (Priorytet 3): wektory znaczeniowe notatek do trybu
+    /// wyszukiwania "znaczeniowo". Aktor — liczy poza głównym wątkiem.
+    nonisolated let semanticIndex = SemanticIndex()
+
     /// Notes currently known to the UI, sorted by `modified` descending.
     private(set) var notes: [Note] = []
 
@@ -62,6 +66,8 @@ final class NotesModel {
 
     init() {
         reload()
+        let indexURL = store.rootURL.appendingPathComponent("semantic_index.json")
+        Task { await semanticIndex.configure(indexURL: indexURL) }
     }
 
     /// Reloads all notes from disk, purging expired trash first and detecting
