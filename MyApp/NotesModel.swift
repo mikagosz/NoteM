@@ -70,6 +70,12 @@ final class NotesModel {
         }
     }
 
+    /// Stores a manual correction of the recognized text, made by the user in
+    /// the OCR panel (Zadanie 2.3).
+    func setOCRText(_ text: String, filename: String, for note: Note) {
+        applyOCR(text: text, filename: filename, noteID: note.id)
+    }
+
     /// Writes the recognized text into the note's `meta.json` (hidden metadata —
     /// the note content is never touched).
     private func applyOCR(text: String, filename: String, noteID: UUID) {
