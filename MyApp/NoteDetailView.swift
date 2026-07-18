@@ -26,6 +26,15 @@ struct NoteDetailView: View {
     @AppStorage("noteDarkBackground") private var darkBackground = true
     /// Whether the drawing editor sheet is showing.
     @State private var showDrawing = false
+    /// Live voice dictation (Priorytet 4).
+    @State private var dictation = VoiceDictation()
+    /// Where the current dictation session's text starts in the text view.
+    @State private var dictationLocation: Int?
+    /// UTF-16 length of the session text inserted so far, so each refined
+    /// transcript replaces the previous one in place.
+    @State private var dictationLength = 0
+    /// Problem with dictation, shown as an alert.
+    @State private var voiceError: String?
     /// Opens the Settings window (gear lives in the right toolbar cluster).
     @Environment(\.openSettings) private var openSettings
 
@@ -83,7 +92,10 @@ struct NoteDetailView: View {
         .overlay(alignment: .bottom) {
             // Hide the note's format capsule while drawing (the drawing bar takes over).
             if !showDrawing {
-                FormatBar(controller: controller, accent: accent, onOpenDrawing: { showDrawing = true })
+                FormatBar(controller: controller, accent: accent,
+                          onOpenDrawing: { showDrawing = true },
+                          dictation: dictation,
+                          onToggleDictation: { Task { await toggleDictation() } })
             }
         }
         .overlay {
@@ -181,11 +193,22 @@ struct NoteDetailView: View {
                 .help(settings.t("Ustawienia", "Settings"))
             }
         }
+        .alert(settings.t("Notatka głosowa", "Voice note"),
+               isPresented: Binding(get: { voiceError != nil },
+                                    set: { if !$0 { voiceError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(voiceError ?? "")
+        }
         .task { load() }
         .onDisappear {
             saveTask?.cancel()
             flush()
             controller.hideFloatingPanel()
+            if dictation.phase != .idle {
+                dictationLocation = nil
+                Task { await dictation.stop() }
+            }
         }
     }
 
@@ -218,6 +241,41 @@ struct NoteDetailView: View {
         controller.onAddAttachment = { [model, note] fileURL in
             model.addAttachment(fileURL: fileURL, to: note)
         }
+    }
+
+    /// Mic button action: starts listening (text appears live at the caret),
+    /// or stops the running dictation (Priorytet 4).
+    private func toggleDictation() async {
+        switch dictation.phase {
+        case .listening:
+            await dictation.stop()
+        case .preparing:
+            break
+        case .idle:
+            guard let textView = controller.textView else { return }
+            textView.window?.makeFirstResponder(textView)
+            dictationLocation = textView.selectedRange().location
+            dictationLength = 0
+            dictation.onTranscript = { applyTranscript($0) }
+            let started = await dictation.start()
+            if !started { voiceError = dictation.lastError }
+        }
+    }
+
+    /// Replaces the current session's text in the note with the newest
+    /// transcript, keeping the caret at its end. Tentative fragments arrive
+    /// several times and refine in place until finalized.
+    private func applyTranscript(_ text: String) {
+        guard let textView = controller.textView, let location = dictationLocation else { return }
+        let sessionRange = NSRange(location: location, length: dictationLength)
+        guard sessionRange.upperBound <= (textView.string as NSString).length else {
+            // The note changed under us (e.g. switched away) — stop writing.
+            dictationLocation = nil
+            return
+        }
+        textView.insertText(text, replacementRange: sessionRange)
+        dictationLength = (text as NSString).length
+        textView.setSelectedRange(NSRange(location: location + dictationLength, length: 0))
     }
 
     private func exportToPDF() {

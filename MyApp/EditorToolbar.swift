@@ -93,6 +93,10 @@ struct FormatBar: View {
     var accent: Color = .accentColor
     /// Opens the drawing editor (wired from the note view).
     var onOpenDrawing: () -> Void = {}
+    /// Live dictation state (Priorytet 4); `nil` hides the mic button.
+    var dictation: VoiceDictation?
+    /// Starts/stops dictation (wired from the note view).
+    var onToggleDictation: () -> Void = {}
 
     /// Toggle formats active at the caret, so the matching buttons light up.
     @State private var active: ActiveFormats = []
@@ -180,6 +184,10 @@ struct FormatBar: View {
                 fmtBtn("paperclip", label: Loc.t("Dodaj załącznik", "Add attachment"), action: { controller.addAttachmentFromPanel() })
                 fmtBtn("pencil.tip.crop.circle", label: Loc.t("Rysowanie", "Drawing"), action: onOpenDrawing)
             }
+            if dictation != nil {
+                divider()
+                dictationButton
+            }
         }
         .padding(.horizontal, 8)
         .frame(height: 38)
@@ -219,6 +227,52 @@ struct FormatBar: View {
                 showTable = false
             }
         }
+    }
+
+    /// Mic button: idle mic / spinner while the speech model loads / red stop
+    /// with the elapsed time while listening (Priorytet 4).
+    @ViewBuilder
+    private var dictationButton: some View {
+        if let dictation {
+            Button(action: onToggleDictation) {
+                switch dictation.phase {
+                case .listening:
+                    HStack(spacing: 4) {
+                        Image(systemName: "stop.circle.fill")
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(elapsedTime(context.date, since: dictation.startedAt))
+                                .font(.system(size: 12))
+                                .monospacedDigit()
+                        }
+                    }
+                    .foregroundStyle(.red)
+                    .frame(height: 34)
+                    .padding(.horizontal, 4)
+                    .contentShape(Rectangle())
+                case .preparing:
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 34, height: 34)
+                case .idle:
+                    Image(systemName: "mic")
+                        .frame(width: 30, height: 30)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(dictation.phase == .preparing)
+            .help(dictation.phase == .listening
+                  ? Loc.t("Zatrzymaj dyktowanie", "Stop dictation")
+                  : Loc.t("Dyktuj notatkę — mów, a tekst pojawi się w notatce na żywo",
+                          "Dictate — speak and the text appears in the note live"))
+        }
+    }
+
+    /// Elapsed dictation time, mm:ss.
+    private func elapsedTime(_ now: Date, since start: Date?) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start ?? now)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private func group<V: View>(@ViewBuilder _ content: () -> V) -> some View {
