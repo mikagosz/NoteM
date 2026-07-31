@@ -100,6 +100,23 @@ final class AppSettings {
         didSet { defaults.set(syncEnabled, forKey: Self.syncKey) }
     }
 
+    /// Whether the user uses Obsidian at all. Off by default — with the bridge
+    /// disconnected the Obsidian button stays out of the note toolbar entirely.
+    var obsidianConnected: Bool {
+        didSet { defaults.set(obsidianConnected, forKey: Self.obsidianConnectedKey) }
+    }
+
+    /// Mirror notes into the vault on every save. Only meaningful while
+    /// `obsidianConnected` is on; manual sending stays available either way.
+    var obsidianAutoExport: Bool {
+        didSet { defaults.set(obsidianAutoExport, forKey: Self.obsidianAutoKey) }
+    }
+
+    /// Folder inside the Obsidian vault that receives the exported notes.
+    var obsidianVaultPath: String {
+        didSet { defaults.set(obsidianVaultPath, forKey: Self.obsidianPathKey) }
+    }
+
     /// Identifier of the selected colour theme (see `AppTheme`).
     var themeID: String {
         didSet { defaults.set(themeID, forKey: Self.themeKey) }
@@ -148,6 +165,9 @@ final class AppSettings {
     private static let qcCornersKey = "quickCaptureCorners"
     private static let trashDaysKey = "trashRetentionDays"
     private static let syncKey = "syncEnabled"
+    private static let obsidianConnectedKey = "obsidianConnected"
+    private static let obsidianAutoKey = "obsidianAutoExport"
+    private static let obsidianPathKey = "obsidianVaultPath"
     private static let themeKey = "themeID"
     private static let startLayoutKey = "startLayout"
     private static let smartFoldersKey = "smartFolders"
@@ -178,6 +198,13 @@ final class AppSettings {
         }
         self.trashRetentionDays = defaults.object(forKey: Self.trashDaysKey) as? Int ?? 30
         self.syncEnabled = defaults.bool(forKey: Self.syncKey)
+        self.obsidianConnected = defaults.bool(forKey: Self.obsidianConnectedKey)
+        // Once connected, mirroring on save is the expected behaviour.
+        self.obsidianAutoExport = defaults.object(forKey: Self.obsidianAutoKey) as? Bool ?? true
+        let storedVaultPath = defaults.string(forKey: Self.obsidianPathKey)
+        self.obsidianVaultPath = (storedVaultPath == nil || storedVaultPath == ObsidianExport.legacyVaultFolder)
+            ? ObsidianExport.defaultVaultFolder
+            : storedVaultPath!
         self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
         self.startLayout = StartLayout(rawValue: defaults.string(forKey: Self.startLayoutKey) ?? "")
             ?? .sections

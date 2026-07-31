@@ -164,54 +164,52 @@ extension Date {
     }
 }
 
-/// Settings window with a sidebar layout.
+/// Settings window, laid out as classic macOS preference tabs.
+///
+/// Deliberately *not* a `NavigationSplitView`: AppKit autosaves a split view's
+/// subview geometry into preferences, and a corrupted entry there (a saved
+/// height far taller than the window) leaves the whole settings window blank
+/// with no way back. A `TabView` keeps no such state, so it can't get stuck.
 struct SettingsView: View {
     let settings: AppSettings
     let model: NotesModel
 
-    @State private var pane: SettingsPane? = .appearance
+    @State private var pane: SettingsPane = .appearance
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $pane) {
-                ForEach(SettingsPane.allCases, id: \.self) { p in
-                    Label {
-                        Text(p.title(settings))
-                    } icon: {
-                        Image(systemName: p.icon)
-                            .foregroundStyle(settings.theme.accent)
-                    }
+        TabView(selection: $pane) {
+            ForEach(SettingsPane.allCases, id: \.self) { p in
+                pageContent(for: p)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .tabItem { Label(p.title(settings), systemImage: p.icon) }
                     .tag(p)
-                }
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 180, max: 200)
-            // No .navigationTitle → keeps the toolbar compact (the big title was
-            // inflating the top bar and clipping content).
-            .toolbar(removing: .sidebarToggle)   // drop the sidebar-collapse button
-        } detail: {
-            Group {
-                switch pane ?? .appearance {
-                case .general:        GeneralSettingsView(settings: settings)
-                case .appearance:     AppearanceSettingsView(settings: settings)
-                case .categorization: RulesSettingsView(settings: settings)
-                case .smartFolders:   SmartFoldersSettingsView(settings: settings)
-                case .quickCapture:
-                    QuickCaptureSettingsView(settings: settings) { QuickCaptureManager.shared.refresh() }
-                case .sync:
-                    SyncSettingsView(settings: settings, model: model) { SyncManager.shared.refresh() }
-                case .trash:          TrashSettingsView(settings: settings)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 700, height: 460)
+        // 540, nie 460: pasek zakładek zjada część wysokości okna, a panele
+        // potrzebują tyle miejsca, ile miały w układzie z paskiem bocznym.
+        .frame(width: 700, height: 540)
         .tint(settings.theme.accent)
+    }
+
+    @ViewBuilder
+    private func pageContent(for pane: SettingsPane) -> some View {
+        switch pane {
+        case .general:        GeneralSettingsView(settings: settings)
+        case .appearance:     AppearanceSettingsView(settings: settings)
+        case .categorization: RulesSettingsView(settings: settings)
+        case .smartFolders:   SmartFoldersSettingsView(settings: settings)
+        case .quickCapture:
+            QuickCaptureSettingsView(settings: settings) { QuickCaptureManager.shared.refresh() }
+        case .sync:
+            SyncSettingsView(settings: settings, model: model) { SyncManager.shared.refresh() }
+        case .obsidian:       ObsidianSettingsView(settings: settings, model: model)
+        case .trash:          TrashSettingsView(settings: settings)
+        }
     }
 }
 
 private enum SettingsPane: String, Hashable, CaseIterable {
-    case general, appearance, categorization, smartFolders, quickCapture, sync, trash
+    case general, appearance, categorization, smartFolders, quickCapture, sync, obsidian, trash
 
     func title(_ s: AppSettings) -> String {
         switch self {
@@ -221,6 +219,7 @@ private enum SettingsPane: String, Hashable, CaseIterable {
         case .smartFolders:   return s.t("Inteligentne foldery", "Smart folders")
         case .quickCapture:   return "Quick Capture"
         case .sync:           return s.t("Synchronizacja", "Sync")
+        case .obsidian:       return "Obsidian"
         case .trash:          return s.t("Kosz", "Trash")
         }
     }
@@ -233,6 +232,7 @@ private enum SettingsPane: String, Hashable, CaseIterable {
         case .smartFolders:   return "folder.badge.questionmark"
         case .quickCapture:   return "bolt.fill"
         case .sync:           return "arrow.triangle.2.circlepath"
+        case .obsidian:       return "square.stack.3d.up"
         case .trash:          return "trash"
         }
     }
@@ -641,24 +641,25 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let error = SyncManager.shared.syncError {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.icloud.fill")
-                            .foregroundStyle(.orange)
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                VStack(spacing: 0) {
+                    if let error = SyncManager.shared.syncError {
+                        StatusBanner(icon: "exclamationmark.icloud.fill", message: error)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.background.opacity(0.95))
-                    .overlay(alignment: .bottom) { Divider() }
+                    // Mostek do Obsidiana nie dowiózł notatki (np. zły folder sejfu).
+                    if let error = model.obsidianError {
+                        StatusBanner(icon: "exclamationmark.triangle.fill", message: error) {
+                            model.clearObsidianError()
+                        }
+                    }
                 }
             }
             .onAppear {
                 model.rulesProvider = { settings.rules }
                 model.trashRetentionProvider = { settings.trashRetentionDays }
+                model.obsidianConfigProvider = {
+                    (settings.obsidianConnected && settings.obsidianAutoExport,
+                     URL(fileURLWithPath: settings.obsidianVaultPath))
+                }
                 model.switchStorage(syncEnabled: settings.syncEnabled, moveExisting: false)
                 QuickCaptureManager.shared.start(model: model, settings: settings)
                 SyncManager.shared.start(model: model, settings: settings)
@@ -842,6 +843,26 @@ struct ContentView: View {
                 subtitle: note.title,
                 icon: note.isTaskList ? "checklist.checked" : "checklist"
             ) { model.toggleTaskList(note) })
+            if settings.obsidianConnected {
+                items.append(CommandPaletteItem(
+                    id: "note-export-obsidian",
+                    title: settings.t("Wyślij do Obsidian", "Send to Obsidian"),
+                    subtitle: note.title,
+                    icon: "square.stack.3d.up"
+                ) { model.exportToObsidian(note) })
+            }
+            items.append(CommandPaletteItem(
+                id: "note-export-html",
+                title: settings.t("Eksportuj do HTML", "Export to HTML"),
+                subtitle: note.title,
+                icon: "globe"
+            ) {
+                HTMLExport.exportWithPanel(
+                    title: note.title,
+                    markdown: model.content(for: note),
+                    attachmentsFolder: model.noteFolder(for: note).appendingPathComponent("attachments")
+                )
+            })
         }
 
         items.append(CommandPaletteItem(
@@ -877,6 +898,37 @@ struct ContentView: View {
     }
 }
 
+/// Thin warning strip pinned above the sidebar (sync problems, failed Obsidian
+/// exports). With `onDismiss` it also shows a close button.
+private struct StatusBanner: View {
+    let icon: String
+    let message: String
+    var onDismiss: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.background.opacity(0.95))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
 /// Sidebar row: note title + last-modified date. When selected it shows the same
 /// full-width blue highlight pill as the folder/tag/nav rows.
 struct NoteRow: View {
@@ -899,8 +951,14 @@ struct NoteRow: View {
                     .font(.caption)
                     .foregroundStyle(isSelected ? AnyShapeStyle(.white.opacity(0.9)) : AnyShapeStyle(.secondary))
             }
+            Spacer(minLength: 4)
+            // Znacznik: notatka ma kopię w sejfie Obsidiana.
+            if let exportedAt = note.obsidianExportedAt {
+                ObsidianMark(sent: true, size: 13)
+                    .help(Loc.t("Wysłano do Obsidiana \(exportedAt.noteMDisplay)",
+                                "Sent to Obsidian \(exportedAt.noteMDisplay)"))
+            }
             if note.pinned {
-                Spacer()
                 Image(systemName: "pin.fill")
                     .font(.caption)
                     .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))

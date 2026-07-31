@@ -30,6 +30,12 @@ struct Note: Identifiable, Equatable {
     /// The `folderPath` the note lived at before being trashed, so it can be
     /// restored to the same place. `nil` for active notes.
     var originalFolderPath: String?
+    /// When the note was last mirrored into the Obsidian vault, or `nil` if it
+    /// has never been exported.
+    var obsidianExportedAt: Date?
+    /// Where the exported copy sits, relative to the vault export folder (e.g.
+    /// "Praca/Zakupy.md"). Kept so a retitled note replaces its old file.
+    var obsidianPath: String?
 
     init(
         id: UUID = UUID(),
@@ -44,7 +50,9 @@ struct Note: Identifiable, Equatable {
         isTaskList: Bool = false,
         taskDone: Bool = false,
         deletedAt: Date? = nil,
-        originalFolderPath: String? = nil
+        originalFolderPath: String? = nil,
+        obsidianExportedAt: Date? = nil,
+        obsidianPath: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -59,6 +67,8 @@ struct Note: Identifiable, Equatable {
         self.taskDone = taskDone
         self.deletedAt = deletedAt
         self.originalFolderPath = originalFolderPath
+        self.obsidianExportedAt = obsidianExportedAt
+        self.obsidianPath = obsidianPath
     }
 }
 
@@ -83,6 +93,9 @@ struct NoteMeta: Codable {
     /// Trash bookkeeping; absent in the metadata of active notes.
     var deletedAt: Date?
     var originalFolderPath: String?
+    /// Obsidian mirror bookkeeping; absent until the note is first exported.
+    var obsidianExportedAt: Date?
+    var obsidianPath: String?
 }
 
 extension Note {
@@ -100,7 +113,9 @@ extension Note {
             isTaskList: isTaskList,
             taskDone: taskDone,
             deletedAt: deletedAt,
-            originalFolderPath: originalFolderPath
+            originalFolderPath: originalFolderPath,
+            obsidianExportedAt: obsidianExportedAt,
+            obsidianPath: obsidianPath
         )
     }
 
@@ -120,7 +135,9 @@ extension Note {
             isTaskList: meta.isTaskList ?? false,
             taskDone: meta.taskDone ?? false,
             deletedAt: meta.deletedAt,
-            originalFolderPath: meta.originalFolderPath
+            originalFolderPath: meta.originalFolderPath,
+            obsidianExportedAt: meta.obsidianExportedAt,
+            obsidianPath: meta.obsidianPath
         )
     }
 }
