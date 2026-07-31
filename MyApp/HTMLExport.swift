@@ -133,11 +133,12 @@ enum HTMLExport {
             block = wanted
         }
 
+        func inlined(_ s: String) -> String {
+            inline(s, attachmentData: attachmentData, wikiHref: wikiHref)
+        }
+
         for rawLine in markdown.components(separatedBy: "\n") {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            let inlined = { (s: String) in
-                inline(s, attachmentData: attachmentData, wikiHref: wikiHref)
-            }
 
             if line.isEmpty {
                 close()
@@ -200,7 +201,7 @@ enum HTMLExport {
         var s = escape(text)
 
         // Images: ![alt](src) — attachments become embedded data URIs.
-        s = replace(s, pattern: "!\\[([^\\]]*)\\]\\(([^)]+)\\)") { groups in
+        s = RegexReplace.apply(s, pattern: "!\\[([^\\]]*)\\]\\(([^)]+)\\)") { groups in
             let alt = groups[1]
             let src = groups[2]
             if let name = attachmentName(src) {
@@ -213,7 +214,7 @@ enum HTMLExport {
         }
         // Links: [label](url) — attachment files render as a plain label,
         // web links stay clickable.
-        s = replace(s, pattern: "\\[([^\\]]+)\\]\\(([^)]+)\\)") { groups in
+        s = RegexReplace.apply(s, pattern: "\\[([^\\]]+)\\]\\(([^)]+)\\)") { groups in
             let label = groups[1]
             let href = groups[2]
             if attachmentName(href) != nil {
@@ -222,7 +223,7 @@ enum HTMLExport {
             return "<a href=\"\(href)\">\(label)</a>"
         }
         // Wiki links: [[Title]]
-        s = replace(s, pattern: "\\[\\[([^\\]]+)\\]\\]") { groups in
+        s = RegexReplace.apply(s, pattern: "\\[\\[([^\\]]+)\\]\\]") { groups in
             let title = groups[1].trimmingCharacters(in: .whitespaces)
             if let href = wikiHref(title) {
                 return "<a href=\"\(href)\">\(title)</a>"
@@ -230,10 +231,10 @@ enum HTMLExport {
             return "<span class=\"wiki\">\(title)</span>"
         }
         // Emphasis and inline code.
-        s = replace(s, pattern: "\\*\\*\\*([^*]+)\\*\\*\\*") { "<strong><em>\($0[1])</em></strong>" }
-        s = replace(s, pattern: "\\*\\*([^*]+)\\*\\*") { "<strong>\($0[1])</strong>" }
-        s = replace(s, pattern: "\\*([^*]+)\\*") { "<em>\($0[1])</em>" }
-        s = replace(s, pattern: "`([^`]+)`") { "<code>\($0[1])</code>" }
+        s = RegexReplace.apply(s, pattern: "\\*\\*\\*([^*]+)\\*\\*\\*") { "<strong><em>\($0[1])</em></strong>" }
+        s = RegexReplace.apply(s, pattern: "\\*\\*([^*]+)\\*\\*") { "<strong>\($0[1])</strong>" }
+        s = RegexReplace.apply(s, pattern: "\\*([^*]+)\\*") { "<em>\($0[1])</em>" }
+        s = RegexReplace.apply(s, pattern: "`([^`]+)`") { "<code>\($0[1])</code>" }
         return s
     }
 
@@ -264,24 +265,4 @@ enum HTMLExport {
             .replacingOccurrences(of: ">", with: "&gt;")
     }
 
-    /// Regex replacement where the substitute is built from the match groups.
-    private static func replace(_ text: String, pattern: String,
-                                with builder: ([String]) -> String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
-        let ns = text as NSString
-        var result = ""
-        var location = 0
-        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            result += ns.substring(with: NSRange(location: location, length: match.range.location - location))
-            var groups: [String] = []
-            for i in 0..<match.numberOfRanges {
-                let r = match.range(at: i)
-                groups.append(r.location == NSNotFound ? "" : ns.substring(with: r))
-            }
-            result += builder(groups)
-            location = NSMaxRange(match.range)
-        }
-        result += ns.substring(from: location)
-        return result
-    }
 }

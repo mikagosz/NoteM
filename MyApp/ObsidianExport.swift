@@ -214,12 +214,12 @@ enum ObsidianExport {
         }
 
         // Obrazki: ![alt](attachments/x) → ![[Zalaczniki/notatka/x]]
-        var result = replace(markdown, pattern: "!\\[([^\\]]*)\\]\\(attachments/([^)\\n]+)\\)") { groups in
+        var result = RegexReplace.apply(markdown, pattern: "!\\[([^\\]]*)\\]\\(attachments/([^)\\n]+)\\)") { groups in
             guard let name = decoded(groups[2]), let path = copyIfNeeded(name) else { return groups[0] }
             return "![[" + path + "]]"
         }
         // Pliki: [etykieta](attachments/x) → [[Zalaczniki/notatka/x|etykieta]]
-        result = replace(result, pattern: "\\[([^\\]]+)\\]\\(attachments/([^)\\n]+)\\)") { groups in
+        result = RegexReplace.apply(result, pattern: "\\[([^\\]]+)\\]\\(attachments/([^)\\n]+)\\)") { groups in
             guard let name = decoded(groups[2]), let path = copyIfNeeded(name) else { return groups[0] }
             return "[[" + path + "|" + groups[1] + "]]"
         }
@@ -298,28 +298,6 @@ enum ObsidianExport {
         return nil
     }
 
-    // MARK: - Regex
-
-    /// Podmiana regexem, gdzie tekst wynikowy budujemy z grup dopasowania.
-    private static func replace(_ text: String, pattern: String,
-                                with builder: ([String]) -> String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
-        let ns = text as NSString
-        var result = ""
-        var location = 0
-        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            result += ns.substring(with: NSRange(location: location, length: match.range.location - location))
-            var groups: [String] = []
-            for i in 0..<match.numberOfRanges {
-                let r = match.range(at: i)
-                groups.append(r.location == NSNotFound ? "" : ns.substring(with: r))
-            }
-            result += builder(groups)
-            location = NSMaxRange(match.range)
-        }
-        result += ns.substring(from: location)
-        return result
-    }
 }
 
 // MARK: - ObsidianMark

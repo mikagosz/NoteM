@@ -149,8 +149,12 @@ final class SyncManager {
         guard let current = model.readManifestDate() else { return }
         guard current != lastManifestDate else { return }
 
+        // The model refuses to reload while an editor holds unsaved text. Leave
+        // `lastManifestDate` alone so the change is still pending and the next
+        // tick (7 s) picks it up — by then the 1 s autosave has long landed.
+        guard model.reloadFromExternalChange() else { return }
+
         lastManifestDate = current
-        model.reloadFromExternalChange()
         lastActivity = Date()
     }
 }
