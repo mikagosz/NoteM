@@ -249,7 +249,11 @@ final class QuickCaptureManager {
             onSave: { [weak self] markdown, richData, isTaskList in
                 self?.saveNote(markdown, richData: richData, isTaskList: isTaskList)
             },
-            onClose: { [weak self, weak panel] in self?.closePanel(panel) }
+            onClose: { [weak self, weak panel] in self?.closePanel(panel) },
+            obsidianConnected: settings.obsidianConnected,
+            onSaveToObsidian: { [weak self] markdown, richData, isTaskList in
+                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList, toObsidian: true)
+            }
         ))
         positionPanel(panel, corner: target, index: panels.count)
         panels.append(panel)
@@ -262,10 +266,13 @@ final class QuickCaptureManager {
         panels.removeAll { $0 === panel }
     }
 
-    private func saveNote(_ markdown: String, richData: Data?, isTaskList: Bool) {
+    /// Saves the quick note; with `toObsidian` it also mirrors it into the vault
+    /// right away, without waiting for the debounced auto-export.
+    private func saveNote(_ markdown: String, richData: Data?, isTaskList: Bool, toObsidian: Bool = false) {
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        model?.createNote(content: markdown, richData: richData, isTaskList: isTaskList)
+        let note = model?.createNote(content: markdown, richData: richData, isTaskList: isTaskList)
+        if toObsidian, let note { model?.exportToObsidian(note) }
     }
 
     /// Positions the panel just inside the given corner. `index` staggers stacked
@@ -391,6 +398,10 @@ struct QuickCaptureView: View {
     /// whether it should be saved as a task-list note.
     let onSave: (String, Data?, Bool) -> Void
     let onClose: () -> Void
+    /// Whether the Obsidian bridge is connected — hides the crystal when it isn't.
+    var obsidianConnected: Bool = false
+    /// Saves the note and immediately mirrors it into the Obsidian vault.
+    var onSaveToObsidian: ((String, Data?, Bool) -> Void)? = nil
 
     /// Its own controller per panel, so several open notes don't share state.
     @State private var controller = RichTextController()
@@ -399,6 +410,8 @@ struct QuickCaptureView: View {
     @AppStorage("quickCaptureDarkBackground") private var darkBackground = false
     /// When on, the saved note is flagged as a planned task list.
     @State private var isTaskList = false
+    /// Confirmation before the quick note is saved and sent to the vault.
+    @State private var showObsidianConfirm = false
 
     /// Weekday + full date at the moment the note opened, in the app language,
     /// e.g. "czwartek, 16 lipca 2026" / "Thursday, July 16, 2026".
@@ -435,6 +448,20 @@ struct QuickCaptureView: View {
             // bottom-right corner of the note.
             .overlay(alignment: .bottomTrailing) {
                 VStack(alignment: .trailing, spacing: 8) {
+                    // Mostek do Obsidiana — nad ikonką zadań, tylko gdy sejf
+                    // jest połączony w ustawieniach.
+                    if obsidianConnected {
+                        Button {
+                            showObsidianConfirm = true
+                        } label: {
+                            ObsidianMark(sent: false, size: 14)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(Loc.t("Zapisz notatkę i wyślij do Obsidiana",
+                                    "Save the note and send it to Obsidian"))
+                    }
+
                     Button {
                         isTaskList.toggle()
                     } label: {
@@ -482,6 +509,17 @@ struct QuickCaptureView: View {
                     .padding(.bottom, 4)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .confirmationDialog(
+                Loc.t("Wyeksportować notatkę do Obsidiana?", "Export the note to Obsidian?"),
+                isPresented: $showObsidianConfirm,
+                titleVisibility: .visible
+            ) {
+                Button(Loc.t("Zapisz i wyślij", "Save and send")) { saveToObsidianAndClose() }
+                Button(Loc.t("Anuluj", "Cancel"), role: .cancel) {}
+            } message: {
+                Text(Loc.t("Notatka zostanie zapisana w NoteM i skopiowana do sejfu Obsidiana jako plik .md.",
+                           "The note will be saved in NoteM and copied into the Obsidian vault as an .md file."))
+            }
             .onAppear {
                 controller.setContent(
                     NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
@@ -495,6 +533,16 @@ struct QuickCaptureView: View {
             }
             .onDisappear { controller.hideFloatingPanel() }
             .onExitCommand { saveAndClose() }
+    }
+
+    /// Crystal button: saves the note and mirrors it into the vault, then closes.
+    private func saveToObsidianAndClose() {
+        if let attributed = controller.textView?.attributedString() {
+            let markdown = MarkdownStyler.markdown(from: attributed)
+            let richData = NoteRichArchive.data(from: attributed)
+            onSaveToObsidian?(markdown, richData, isTaskList)
+        }
+        onClose()
     }
 
     /// Esc / save button: saves only if something was typed, then closes.

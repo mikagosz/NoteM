@@ -35,6 +35,8 @@ struct NoteDetailView: View {
     @State private var dictationLength = 0
     /// Problem with dictation, shown as an alert.
     @State private var voiceError: String?
+    /// Confirmation before the note is copied into the Obsidian vault.
+    @State private var showObsidianConfirm = false
     /// Opens the Settings window (gear lives in the right toolbar cluster).
     @Environment(\.openSettings) private var openSettings
 
@@ -42,6 +44,12 @@ struct NoteDetailView: View {
     /// changes immediately (the passed-in `note` is a snapshot).
     private var isTaskListNote: Bool {
         model.notes.first(where: { $0.id == note.id })?.isTaskList ?? note.isTaskList
+    }
+
+    /// Live Obsidian export stamp read from the model, so the toolbar button
+    /// updates the moment the note is mirrored (the passed-in `note` is a snapshot).
+    private var obsidianExportedAt: Date? {
+        model.notes.first(where: { $0.id == note.id })?.obsidianExportedAt
     }
 
     /// Weekday + full date + time in the app language, e.g.
@@ -96,6 +104,22 @@ struct NoteDetailView: View {
                           onOpenDrawing: { showDrawing = true },
                           dictation: dictation,
                           onToggleDictation: { Task { await toggleDictation() } })
+            }
+        }
+        // Mostek do Obsidiana — kryształ w prawym dolnym rogu notatki. Bez
+        // połączenia sejfu w ustawieniach ikonka w ogóle się nie pojawia.
+        .overlay(alignment: .bottomTrailing) {
+            if settings.obsidianConnected, !showDrawing {
+                ObsidianSendButton(
+                    sent: obsidianExportedAt != nil,
+                    help: obsidianExportedAt.map {
+                        settings.t("W Obsidianie od \($0.noteMDisplay) — kliknij, by odświeżyć kopię",
+                                   "In Obsidian since \($0.noteMDisplay) — click to refresh the copy")
+                    } ?? settings.t("Wyślij notatkę do sejfu Obsidiana",
+                                    "Send the note to the Obsidian vault")
+                ) { showObsidianConfirm = true }
+                .padding(.trailing, 14)
+                .padding(.bottom, 14)
             }
         }
         .overlay {
@@ -162,6 +186,14 @@ struct NoteDetailView: View {
                 }
                 .help(settings.t("Eksportuj notatkę jako PDF", "Export note as PDF"))
             }
+            // Eksport HTML (Priorytet 6): jeden samodzielny plik .html.
+            ToolbarItem(placement: .automatic) {
+                Button(action: exportToHTML) {
+                    Label(settings.t("Eksportuj HTML", "Export HTML"), systemImage: "globe")
+                        .foregroundStyle(accent)
+                }
+                .help(settings.t("Eksportuj notatkę jako stronę HTML", "Export note as an HTML page"))
+            }
             ToolbarItem(placement: .automatic) {
                 Button(action: printNote) {
                     Label(settings.t("Drukuj", "Print"), systemImage: "printer")
@@ -192,6 +224,19 @@ struct NoteDetailView: View {
                 }
                 .help(settings.t("Ustawienia", "Settings"))
             }
+        }
+        .confirmationDialog(
+            obsidianExportedAt == nil
+                ? settings.t("Wyeksportować notatkę do Obsidiana?", "Export the note to Obsidian?")
+                : settings.t("Zaktualizować kopię w Obsidianie?", "Update the copy in Obsidian?"),
+            isPresented: $showObsidianConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(settings.t("Wyślij", "Send")) { sendToObsidian() }
+            Button(settings.t("Anuluj", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(settings.t("Notatka trafi do sejfu Obsidiana jako plik .md. Kopia w sejfie zostanie nadpisana.",
+                            "The note will be copied into the Obsidian vault as an .md file, overwriting the existing copy."))
         }
         .alert(settings.t("Notatka głosowa", "Voice note"),
                isPresented: Binding(get: { voiceError != nil },
@@ -299,6 +344,23 @@ struct NoteDetailView: View {
             op.showsProgressPanel = false
             op.run()
         }
+    }
+
+    /// Saves the note as a standalone HTML page (Priorytet 6, zadanie 6.1).
+    private func exportToHTML() {
+        flush()
+        HTMLExport.exportWithPanel(
+            title: note.title,
+            markdown: model.content(for: note),
+            attachmentsFolder: model.noteFolder(for: note).appendingPathComponent("attachments")
+        )
+    }
+
+    /// Zapisuje bieżący tekst i wysyła notatkę do sejfu Obsidiana (ręcznie,
+    /// niezależnie od tego, czy auto-eksport jest włączony).
+    private func sendToObsidian() {
+        flush()
+        model.exportToObsidian(note)
     }
 
     private func printNote() {

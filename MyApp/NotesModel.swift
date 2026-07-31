@@ -64,6 +64,20 @@ final class NotesModel {
     /// `AppSettings`; defaults to no rules.
     var rulesProvider: () -> [CategoryRule] = { [] }
 
+    /// Supplies the Obsidian mirror settings: whether every save is mirrored, and
+    /// which vault folder receives the `.md` copies. Set by the UI from
+    /// `AppSettings`.
+    var obsidianConfigProvider: () -> (autoExport: Bool, folder: URL) = {
+        (false, URL(fileURLWithPath: ObsidianExport.defaultVaultFolder))
+    }
+
+    /// Last Obsidian export failure (e.g. vault folder unreachable), or `nil`
+    /// when the mirror is healthy.
+    private(set) var obsidianError: String?
+
+    /// Pending debounced auto-exports, keyed by note id.
+    @ObservationIgnored private var obsidianExportTasks: [UUID: Task<Void, Never>] = [:]
+
     init() {
         reload()
         let indexURL = store.rootURL.appendingPathComponent("semantic_index.json")
@@ -195,6 +209,7 @@ final class NotesModel {
     /// Moves a note to the trash (soft delete): it leaves the main list but its
     /// folder is preserved under `.trash/` until restored or purged.
     func delete(_ note: Note) {
+        removeObsidianMirror(for: note)
         let trashed = store.trashNote(note)
         notes.removeAll { $0.id == note.id }
         trashedNotes.insert(trashed, at: 0)
@@ -208,6 +223,11 @@ final class NotesModel {
         notes.insert(restored, at: 0)
         notes.sort(by: Self.pinnedThenModified)
         rebuildAttachments()
+
+        // The mirror was removed when the note was trashed — put it back.
+        if obsidianConfigProvider().autoExport {
+            exportToObsidian(restored)
+        }
     }
 
     /// Permanently deletes a trashed note's folder from disk.
@@ -225,6 +245,86 @@ final class NotesModel {
     /// or `nil` for notes saved before rich storage existed.
     func richContent(for note: Note) -> Data? {
         store.loadRichData(for: note)
+    }
+
+    // MARK: - Obsidian mirror
+
+    /// Writes (or rewrites) a note's `.md` copy in the Obsidian vault and stamps
+    /// it with the export date. Returns `false` and sets `obsidianError` when the
+    /// vault folder can't be written to. Called automatically on save when the
+    /// mirror is enabled, and from the "Wyślij do Obsidian" button.
+    @discardableResult
+    func exportToObsidian(_ note: Note) -> Bool {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return false }
+        let current = notes[index]
+        do {
+            let outcome = try ObsidianExport.export(
+                note: current,
+                markdown: store.loadContent(for: current),
+                category: category(of: current),
+                noteFolder: store.folderURL(for: current),
+                vaultFolder: obsidianConfigProvider().folder,
+                previousRelativePath: current.obsidianPath
+            )
+            notes[index].obsidianExportedAt = outcome.exportedAt
+            notes[index].obsidianPath = outcome.relativePath
+            store.updateMeta(notes[index])
+            obsidianError = nil
+            return true
+        } catch {
+            obsidianError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Mirrors every note into the vault. Returns how many were written.
+    @discardableResult
+    func exportAllToObsidian() -> Int {
+        notes.reduce(into: 0) { count, note in
+            if exportToObsidian(note) { count += 1 }
+        }
+    }
+
+    /// Moves the mirror after the vault folder changed: drops the copies from
+    /// `oldFolder` and rewrites them where the mirror now points. Only notes that
+    /// already had a copy are moved. Returns how many were rewritten.
+    @discardableResult
+    func relocateObsidianMirror(from oldFolder: URL) -> Int {
+        let mirrored = notes.filter { $0.obsidianPath != nil }
+        for note in mirrored {
+            guard let path = note.obsidianPath else { continue }
+            ObsidianExport.removeMirror(relativePath: path, vaultFolder: oldFolder, noteID: note.id)
+        }
+        return mirrored.reduce(into: 0) { count, note in
+            if exportToObsidian(note) { count += 1 }
+        }
+    }
+
+    /// Clears a stuck export error (after the user fixed the vault path).
+    func clearObsidianError() { obsidianError = nil }
+
+    /// Debounced auto-export: a burst of autosaves while typing produces a single
+    /// vault write once the note has been quiet for a few seconds, so Obsidian's
+    /// file watcher doesn't see the note change on every keystroke pause.
+    private func scheduleObsidianExport(for note: Note) {
+        obsidianExportTasks[note.id]?.cancel()
+        obsidianExportTasks[note.id] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.obsidianExportTasks[note.id] = nil
+            self?.exportToObsidian(note)
+        }
+    }
+
+    /// Drops a note's copy from the vault, so a note deleted in NoteM also
+    /// disappears from Obsidian. Only removes files this note created.
+    private func removeObsidianMirror(for note: Note) {
+        guard let path = note.obsidianPath else { return }
+        ObsidianExport.removeMirror(
+            relativePath: path,
+            vaultFolder: obsidianConfigProvider().folder,
+            noteID: note.id
+        )
     }
 
     // MARK: - Categories (physical folders)
@@ -440,6 +540,10 @@ final class NotesModel {
         notes[index] = saved
         notes.sort(by: Self.pinnedThenModified)
         rebuildAttachments()
+
+        if obsidianConfigProvider().autoExport {
+            scheduleObsidianExport(for: saved)
+        }
     }
 
     /// Sort order for the notes list: pinned notes first, then newest-modified.
