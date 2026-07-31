@@ -127,8 +127,13 @@ notes go to your disk and — only if you turn sync on — to your own iCloud Dr
 
 ## Requirements
 
-- macOS 27 or later
-- Xcode 27 or later to build
+- macOS 26 or later
+- Xcode 26 or later to build
+
+Live dictation uses the newer `SpeechTranscriber` where the system provides it and
+falls back to `SFSpeechRecognizer` otherwise, so it works across the supported
+range. Semantic search quietly disables itself if the on-device embedding model
+isn't available.
 
 ## Building
 
