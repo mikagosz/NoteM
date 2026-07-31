@@ -763,6 +763,16 @@ struct ContentView: View {
                 }
             }
             }
+            // A write that didn't reach the disk is shown right where the user is
+            // working, not just in the sidebar — the note on screen may not be the
+            // note in the store.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let error = model.storeError {
+                    StatusBanner(icon: "externaldrive.badge.xmark", message: error) {
+                        model.clearStoreError()
+                    }
+                }
+            }
             // Settings gear at the far right — only when no note is open, since
             // the note's own toolbar provides it (with the background toggle).
             .toolbar {
@@ -1611,6 +1621,9 @@ struct StartView: View {
     /// Note contents, cached once so search and previews don't re-read files on
     /// every keystroke.
     @State private var contentIndex: [UUID: String] = [:]
+    /// The `modified` stamp each cached entry was read at, so a rebuild only
+    /// touches notes that actually changed instead of the whole notes folder.
+    @State private var indexedAt: [UUID: Date] = [:]
     /// In the stacks layout: which stack (bucket title) is opened, if any.
     @State private var openedStack: String?
 
@@ -1837,12 +1850,22 @@ struct StartView: View {
         .onTapGesture { openNote(note.id) }
     }
 
+    /// Refreshes the snippet cache. Reads from disk only for notes that are new
+    /// or whose `modified` moved since they were last read — creating or deleting
+    /// one note no longer re-reads every note in the store.
     private func buildIndex() {
         var index: [UUID: String] = [:]
+        var stamps: [UUID: Date] = [:]
         for note in model.notes {
-            index[note.id] = model.content(for: note)
+            if indexedAt[note.id] == note.modified, let cached = contentIndex[note.id] {
+                index[note.id] = cached
+            } else {
+                index[note.id] = model.content(for: note)
+            }
+            stamps[note.id] = note.modified
         }
         contentIndex = index
+        indexedAt = stamps
 
         // Refresh semantic vectors in the background; the index skips notes
         // whose content hash hasn't changed, so this is cheap when idle.

@@ -37,6 +37,14 @@ final class NoteStore {
     /// Called when a manifest write fails (e.g. iCloud Drive unavailable).
     var onWriteError: ((String) -> Void)?
 
+    /// Called when a note's own data can't be written to disk — its text, rich
+    /// archive, metadata, attachments or folder moves.
+    ///
+    /// Kept separate from `onWriteError`: that one reports store-level iCloud
+    /// availability and is cleared by the sync poller on the next healthy tick,
+    /// which would swallow a message about a note that failed to save.
+    var onDataError: ((String) -> Void)?
+
     /// Errors thrown by the store.
     enum StoreError: Error {
         case noteFolderMissing(String)
@@ -71,13 +79,21 @@ final class NoteStore {
     @discardableResult
     func createNote(title: String) -> Note {
         let now = Date()
+        let id = UUID()
         // New notes start unfiled in Inbox; the categorization engine may move
         // them once they have content (see NotesModel.save).
-        let folderPath = CategoryEngine.inbox + "/" + Self.makeFolderPath(for: now)
-        let note = Note(title: title, created: now, modified: now, folderPath: folderPath)
+        var folderPath = CategoryEngine.inbox + "/" + Self.makeFolderPath(for: now)
+        // The folder name is only precise to the second, so two notes created in
+        // the same second would share one — and the second would overwrite the
+        // first's note.md and meta.json, losing it. Disambiguate as elsewhere.
+        if fileManager.fileExists(atPath: url(forFolderPath: folderPath).path) {
+            folderPath += "-" + id.uuidString.prefix(8)
+        }
+        let note = Note(id: id, title: title, created: now, modified: now, folderPath: folderPath)
 
         let folderURL = url(forFolderPath: folderPath)
-        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        // Without the folder both writes below would fail too — report once.
+        guard ensureDirectory(at: folderURL) else { return note }
 
         writeContent("", to: folderURL)
         writeMeta(note.meta, to: folderURL)
@@ -131,18 +147,23 @@ final class NoteStore {
     }
 
     /// Overwrites `note.md` with `content` and rewrites `meta.json`, bumping
-    /// `modified`. Returns the updated note.
+    /// `modified`.
+    ///
+    /// Returns `nil` when the note's text couldn't reach the disk — the caller
+    /// must not then present the note as saved, since a bumped `modified` on a
+    /// failed write would also make this version look newer than a good copy on
+    /// another Mac. The failure is reported through `onDataError`.
     @discardableResult
-    func saveNote(_ note: Note, content: String, richData: Data? = nil) -> Note {
+    func saveNote(_ note: Note, content: String, richData: Data? = nil) -> Note? {
         var updated = note
         updated.modified = Date()
 
         let folderURL = url(forFolderPath: updated.folderPath)
-        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        guard ensureDirectory(at: folderURL) else { return nil }
 
         // Snapshot the previous content before overwriting, as a safety net.
         snapshotContent(for: updated, from: folderURL)
-        writeContent(content, to: folderURL)
+        guard writeContent(content, to: folderURL) else { return nil }
         writeRich(richData, to: folderURL)
         writeMeta(updated.meta, to: folderURL)
         updateManifest()
@@ -154,26 +175,30 @@ final class NoteStore {
 
     /// Moves a note's folder into `.trash/<id>`, recording where it came from and
     /// when it was deleted. Returns the note with its trash `folderPath` and
-    /// metadata (or unchanged if the move fails).
+    /// metadata, or `nil` if the move didn't happen (reported via `onDataError`)
+    /// — the caller must then leave the note where the user can still see it.
     @discardableResult
-    func trashNote(_ note: Note) -> Note {
+    func trashNote(_ note: Note) -> Note? {
         let source = url(forFolderPath: note.folderPath)
-        guard fileManager.fileExists(atPath: source.path) else { return note }
+        guard fileManager.fileExists(atPath: source.path) else {
+            onDataError?(Loc.t("Folder notatki „\(note.title)” zniknął z dysku — nie ma czego przenieść do kosza",
+                               "The folder for “\(note.title)” is gone from disk — nothing to move to the trash"))
+            return nil
+        }
 
         let trashPath = Self.trashDir + "/" + note.id.uuidString
         let destination = url(forFolderPath: trashPath)
-        try? fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        guard ensureDirectory(at: destination.deletingLastPathComponent()) else { return nil }
         if fileManager.fileExists(atPath: destination.path) {
-            try? fileManager.removeItem(at: destination)
+            guard write(Loc.t("Nie udało się zwolnić miejsca w koszu",
+                              "Could not clear the slot in the trash"), {
+                try fileManager.removeItem(at: destination)
+            }) else { return nil }
         }
-        do {
+        guard write(Loc.t("Nie udało się przenieść notatki „\(note.title)” do kosza",
+                          "Could not move “\(note.title)” to the trash"), {
             try fileManager.moveItem(at: source, to: destination)
-        } catch {
-            return note
-        }
+        }) else { return nil }
 
         var trashed = note
         trashed.originalFolderPath = note.folderPath
@@ -185,28 +210,29 @@ final class NoteStore {
     }
 
     /// Moves a trashed note back to its original location (disambiguating if
-    /// something now sits there) and clears its trash metadata.
+    /// something now sits there) and clears its trash metadata. Returns `nil`
+    /// when the move failed, so the note stays visible in the trash.
     @discardableResult
-    func restoreNote(_ note: Note) -> Note {
+    func restoreNote(_ note: Note) -> Note? {
         let source = url(forFolderPath: note.folderPath)
-        guard fileManager.fileExists(atPath: source.path) else { return note }
+        guard fileManager.fileExists(atPath: source.path) else {
+            onDataError?(Loc.t("Folder notatki „\(note.title)” zniknął z kosza — nie ma czego przywrócić",
+                               "The folder for “\(note.title)” is gone from the trash — nothing to restore"))
+            return nil
+        }
 
         let target = note.originalFolderPath ?? (CategoryEngine.inbox + "/" + note.id.uuidString)
         var finalPath = target
         var destination = url(forFolderPath: finalPath)
-        try? fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        guard ensureDirectory(at: destination.deletingLastPathComponent()) else { return nil }
         if fileManager.fileExists(atPath: destination.path) {
             finalPath = target + "-" + note.id.uuidString.prefix(8)
             destination = url(forFolderPath: finalPath)
         }
-        do {
+        guard write(Loc.t("Nie udało się przywrócić notatki „\(note.title)” z kosza",
+                          "Could not restore “\(note.title)” from the trash"), {
             try fileManager.moveItem(at: source, to: destination)
-        } catch {
-            return note
-        }
+        }) else { return nil }
 
         var restored = note
         restored.folderPath = finalPath
@@ -230,29 +256,25 @@ final class NoteStore {
 
     /// Moves a note's folder to `newFolderPath` (relative to the store root),
     /// creating intermediate directories and avoiding name collisions. Returns
-    /// the note with its updated `folderPath` (unchanged if the move fails).
+    /// the note with its updated `folderPath`, or `nil` if it stayed put.
     @discardableResult
-    func moveNote(_ note: Note, toFolderPath newFolderPath: String) -> Note {
+    func moveNote(_ note: Note, toFolderPath newFolderPath: String) -> Note? {
         let source = url(forFolderPath: note.folderPath)
-        guard fileManager.fileExists(atPath: source.path) else { return note }
+        guard fileManager.fileExists(atPath: source.path) else { return nil }
 
         var finalPath = newFolderPath
         var destination = url(forFolderPath: finalPath)
-        try? fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        guard ensureDirectory(at: destination.deletingLastPathComponent()) else { return nil }
         // Disambiguate if something already sits at the destination.
         if fileManager.fileExists(atPath: destination.path) {
             finalPath = newFolderPath + "-" + note.id.uuidString.prefix(8)
             destination = url(forFolderPath: finalPath)
         }
 
-        do {
+        guard write(Loc.t("Nie udało się skatalogować notatki „\(note.title)” w folderze \(newFolderPath)",
+                          "Could not file “\(note.title)” into \(newFolderPath)"), {
             try fileManager.moveItem(at: source, to: destination)
-        } catch {
-            return note
-        }
+        }) else { return nil }
 
         var moved = note
         moved.folderPath = finalPath
@@ -260,20 +282,27 @@ final class NoteStore {
     }
 
     /// Rewrites only `meta.json` for a note (e.g. after a tags change), leaving
-    /// `note.md` and `modified` untouched.
+    /// `note.md` and `modified` untouched. Returns whether it reached the disk.
     @discardableResult
-    func updateMeta(_ note: Note) -> Note {
+    func updateMeta(_ note: Note) -> Bool {
         let folderURL = url(forFolderPath: note.folderPath)
-        writeMeta(note.meta, to: folderURL)
+        guard writeMeta(note.meta, to: folderURL) else { return false }
         updateManifest()
-        return note
+        return true
     }
 
-    /// Deletes a note's entire folder from disk.
-    func deleteNote(_ note: Note) {
+    /// Deletes a note's entire folder from disk. Returns whether it's gone.
+    @discardableResult
+    func deleteNote(_ note: Note) -> Bool {
         let folderURL = url(forFolderPath: note.folderPath)
-        try? fileManager.removeItem(at: folderURL)
+        // Already gone — the caller's goal is met, nothing to report.
+        guard fileManager.fileExists(atPath: folderURL.path) else { return true }
+        guard write(Loc.t("Nie udało się usunąć notatki „\(note.title)” z dysku",
+                          "Could not delete “\(note.title)” from disk"), {
+            try fileManager.removeItem(at: folderURL)
+        }) else { return false }
         updateManifest()
+        return true
     }
 
     /// Reads the `note.md` content for a given note, or an empty string if
@@ -305,7 +334,7 @@ final class NoteStore {
     @discardableResult
     func addAttachment(fileURL: URL, toNote note: Note) -> String? {
         let attachDir = url(forFolderPath: note.folderPath).appendingPathComponent("attachments", isDirectory: true)
-        try? fileManager.createDirectory(at: attachDir, withIntermediateDirectories: true)
+        guard ensureDirectory(at: attachDir) else { return nil }
 
         var dest = attachDir.appendingPathComponent(fileURL.lastPathComponent)
         var counter = 1
@@ -315,7 +344,10 @@ final class NoteStore {
             dest = attachDir.appendingPathComponent("\(base)-\(counter).\(ext)")
             counter += 1
         }
-        guard (try? fileManager.copyItem(at: fileURL, to: dest)) != nil else { return nil }
+        guard write(Loc.t("Nie udało się dodać załącznika „\(fileURL.lastPathComponent)”",
+                          "Could not add the attachment “\(fileURL.lastPathComponent)”"), {
+            try fileManager.copyItem(at: fileURL, to: dest)
+        }) else { return nil }
         updateManifest()
         return dest.lastPathComponent
     }
@@ -335,7 +367,11 @@ final class NoteStore {
         ) else { return }
         var removedAny = false
         for item in items where !names.contains(item.lastPathComponent) {
-            if (try? fileManager.removeItem(at: item)) != nil { removedAny = true }
+            let removed = write(Loc.t("Nie udało się usunąć nieużywanego załącznika „\(item.lastPathComponent)”",
+                                      "Could not remove the unused attachment “\(item.lastPathComponent)”")) {
+                try fileManager.removeItem(at: item)
+            }
+            if removed { removedAny = true }
         }
         if removedAny { updateManifest() }
     }
@@ -392,29 +428,46 @@ final class NoteStore {
     }
 
     /// Sets (or clears, with `nil`) the cover-colour theme id for a category.
-    func setCategoryColorID(_ id: String?, forCategory category: String) {
-        guard !category.isEmpty else { return }
+    /// Returns whether it reached the disk.
+    @discardableResult
+    func setCategoryColorID(_ id: String?, forCategory category: String) -> Bool {
+        guard !category.isEmpty else { return false }
         let folderURL = url(forFolderPath: category)
-        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        guard ensureDirectory(at: folderURL) else { return false }
         let metaURL = folderURL.appendingPathComponent(Self.categoryMetaFile)
-        if let data = try? encoder.encode(CategoryMeta(coverColorID: id)) {
-            try? data.write(to: metaURL)
-        }
+        guard write(Loc.t("Nie udało się zapisać koloru kategorii „\(category)”",
+                          "Could not save the cover colour for “\(category)”"), {
+            try encoder.encode(CategoryMeta(coverColorID: id)).write(to: metaURL, options: .atomic)
+        }) else { return false }
         updateManifest()
+        return true
     }
 
     /// Moves every top-level entry (note folders, `.trash`, `.history`) from one
     /// store root into another, used when switching between local and iCloud
     /// storage. Existing items at the destination are left untouched.
-    static func moveContents(from source: URL, to destination: URL) {
+    ///
+    /// Returns the names that could not be moved, so the caller can tell the user
+    /// which notes stayed behind instead of silently losing half the library.
+    static func moveContents(from source: URL, to destination: URL) -> [String] {
         let fm = FileManager.default
-        try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
-        guard let items = try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
+        do {
+            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        } catch {
+            return [destination.lastPathComponent]
+        }
+        guard let items = try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return [] }
+        var failed: [String] = []
         for item in items {
             let target = destination.appendingPathComponent(item.lastPathComponent)
             guard !fm.fileExists(atPath: target.path) else { continue }
-            try? fm.moveItem(at: item, to: target)
+            do {
+                try fm.moveItem(at: item, to: target)
+            } catch {
+                failed.append(item.lastPathComponent)
+            }
         }
+        return failed
     }
 
     // MARK: - Helpers
@@ -440,31 +493,74 @@ final class NoteStore {
         return folderComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
-    private func writeContent(_ content: String, to folderURL: URL) {
+    /// Runs a disk write, reporting `what` through `onDataError` when it fails.
+    /// Returns whether the write went through, so callers can stop instead of
+    /// piling a second failure on top of the first.
+    @discardableResult
+    private func write(_ what: String, _ body: () throws -> Void) -> Bool {
+        do {
+            try body()
+            return true
+        } catch {
+            onDataError?(what + " — " + error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Creates a folder (with intermediates), reporting failure. Returns whether
+    /// the folder is there to be written into.
+    @discardableResult
+    private func ensureDirectory(at url: URL) -> Bool {
+        write(Loc.t("Nie udało się utworzyć folderu „\(url.lastPathComponent)”",
+                    "Could not create the folder “\(url.lastPathComponent)”")) {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+    }
+
+    @discardableResult
+    private func writeContent(_ content: String, to folderURL: URL) -> Bool {
         let url = folderURL.appendingPathComponent(FileName.content)
-        try? content.data(using: .utf8)?.write(to: url)
+        return write(Loc.t("Nie udało się zapisać treści notatki",
+                           "Could not save the note's text")) {
+            try Data(content.utf8).write(to: url, options: .atomic)
+        }
     }
 
     /// Writes the rich archive, or removes a stale one when `data` is nil (e.g. a
     /// markdown-only save such as completing a task) so display falls back to md.
-    private func writeRich(_ data: Data?, to folderURL: URL) {
+    @discardableResult
+    private func writeRich(_ data: Data?, to folderURL: URL) -> Bool {
         let url = folderURL.appendingPathComponent(FileName.rich)
         if let data {
-            try? data.write(to: url)
-        } else {
-            try? fileManager.removeItem(at: url)
+            return write(Loc.t("Nie udało się zapisać formatowania notatki",
+                               "Could not save the note's formatting")) {
+                try data.write(to: url, options: .atomic)
+            }
+        }
+        // Nothing to clear — not a failure, so don't report one.
+        guard fileManager.fileExists(atPath: url.path) else { return true }
+        return write(Loc.t("Nie udało się usunąć nieaktualnego formatowania notatki",
+                           "Could not remove the note's stale formatting")) {
+            try fileManager.removeItem(at: url)
         }
     }
 
-    private func writeMeta(_ meta: NoteMeta, to folderURL: URL) {
+    @discardableResult
+    private func writeMeta(_ meta: NoteMeta, to folderURL: URL) -> Bool {
         let url = folderURL.appendingPathComponent(FileName.meta)
-        if let data = try? encoder.encode(meta) {
-            try? data.write(to: url)
+        return write(Loc.t("Nie udało się zapisać danych notatki",
+                           "Could not save the note's metadata")) {
+            try encoder.encode(meta).write(to: url, options: .atomic)
         }
     }
 
     /// Copies the existing `note.md` (if any) into `.history/<id>/<timestamp>.md`
     /// and prunes the folder to the most recent `historyLimit` snapshots.
+    ///
+    /// Deliberately silent: history is a best-effort safety net on top of the
+    /// save, and a failure here means no snapshot — not a lost note. The save
+    /// itself reports through `onDataError`, and a broken disk would otherwise
+    /// produce two banners for every keystroke pause.
     private func snapshotContent(for note: Note, from folderURL: URL) {
         let contentURL = folderURL.appendingPathComponent(FileName.content)
         guard let existing = try? Data(contentsOf: contentURL), !existing.isEmpty else { return }

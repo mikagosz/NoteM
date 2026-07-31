@@ -1,18 +1,6 @@
 import Foundation
 import Observation
 
-/// One unchecked checklist item collected from a note, for the "Zadania" view.
-struct TaskItem: Identifiable, Hashable {
-    let noteID: UUID
-    let noteTitle: String
-    /// Zero-based line index of the item within its note's `note.md`.
-    let lineIndex: Int
-    /// Display text (inline markdown stripped).
-    let text: String
-
-    var id: String { "\(noteID.uuidString)#\(lineIndex)" }
-}
-
 /// Observable UI-facing wrapper around `NoteStore`.
 ///
 /// Holds the in-memory list of notes (sorted newest-modified first) and
@@ -42,6 +30,20 @@ final class NotesModel {
     /// "Załączniki" view. Rebuilt whenever the notes or their content change.
     private(set) var attachments: [AttachmentRef] = []
 
+    /// Per-note attachment refs, so a save only rescans the note that changed
+    /// instead of reading every note's content back off the disk.
+    @ObservationIgnored private var attachmentsByNote: [UUID: [AttachmentRef]] = [:]
+
+    /// Last failed write to disk (note text, metadata, attachment, trash move),
+    /// or `nil` when everything landed. Shown as a banner so a save that didn't
+    /// reach the disk can't pass unnoticed.
+    private(set) var storeError: String?
+
+    /// Notes whose editor holds changes not yet written to disk. An external
+    /// (iCloud) reload would replace the editor's text with the older on-disk
+    /// version, so `reloadFromExternalChange()` defers while this isn't empty.
+    @ObservationIgnored private var notesWithPendingEdits: Set<UUID> = []
+
     /// Absolute URL of the current store root (local Documents or iCloud Drive).
     var rootURL: URL { store.rootURL }
 
@@ -49,11 +51,12 @@ final class NotesModel {
     func noteFolder(for note: Note) -> URL { store.folderURL(for: note) }
 
     /// Copies a file into the note's `attachments/` subfolder. Returns the
-    /// resulting filename, or `nil` if the copy failed.
+    /// resulting filename, or `nil` if the copy failed (the store reports why
+    /// through `storeError`).
     @discardableResult
     func addAttachment(fileURL: URL, to note: Note) -> String? {
         let filename = store.addAttachment(fileURL: fileURL, toNote: note)
-        rebuildAttachments()
+        if filename != nil { refreshAttachments(for: note) }
         return filename
     }
 
@@ -79,9 +82,33 @@ final class NotesModel {
     @ObservationIgnored private var obsidianExportTasks: [UUID: Task<Void, Never>] = [:]
 
     init() {
+        connectStoreErrors()
         reload()
         let indexURL = store.rootURL.appendingPathComponent("semantic_index.json")
         Task { await semanticIndex.configure(indexURL: indexURL) }
+    }
+
+    /// Routes the store's write failures into `storeError` so the UI can show
+    /// them. Re-applied whenever the store is replaced (storage switch).
+    private func connectStoreErrors() {
+        store.onDataError = { [weak self] message in
+            self?.storeError = message
+        }
+    }
+
+    /// Clears the write-error banner (after the user acknowledged it).
+    func clearStoreError() { storeError = nil }
+
+    // MARK: - Unsaved editor changes
+
+    /// Called by the open editor when it holds text that isn't on disk yet.
+    func beginPendingEdits(for noteID: UUID) {
+        notesWithPendingEdits.insert(noteID)
+    }
+
+    /// Called once the editor's text has been written (or the editor closed).
+    func endPendingEdits(for noteID: UUID) {
+        notesWithPendingEdits.remove(noteID)
     }
 
     /// Reloads all notes from disk, purging expired trash first and detecting
@@ -130,8 +157,7 @@ final class NotesModel {
     /// Sets (or clears) the cover colour for a note's category and persists it.
     func setCategoryColor(_ id: String?, for note: Note) {
         let cat = category(of: note)
-        guard !cat.isEmpty else { return }
-        store.setCategoryColorID(id, forCategory: cat)
+        guard !cat.isEmpty, store.setCategoryColorID(id, forCategory: cat) else { return }
         if let id {
             categoryColors[cat] = id
         } else {
@@ -140,8 +166,19 @@ final class NotesModel {
     }
 
     /// Reload triggered by an external filesystem change (e.g. another Mac via
-    /// iCloud). Same as `reload()`, named for clarity at the call site.
-    func reloadFromExternalChange() { reload() }
+    /// iCloud).
+    ///
+    /// Returns `false` — without reloading — while an editor still holds unsaved
+    /// text: the reload would swap the editor's note for the older copy on disk
+    /// and the user's last few seconds of typing would be gone. The autosave
+    /// runs a second after the last keystroke, so the caller only has to come
+    /// back on its next poll.
+    @discardableResult
+    func reloadFromExternalChange() -> Bool {
+        guard notesWithPendingEdits.isEmpty else { return false }
+        reload()
+        return true
+    }
 
     // MARK: - Storage location (sync)
 
@@ -160,11 +197,18 @@ final class NotesModel {
         let newRoot = StorageLocation.root(syncEnabled: syncEnabled)
         guard newRoot != store.rootURL else { return }
         let savedErrorHandler = store.onWriteError
+        let oldRoot = store.rootURL
+        var stragglers: [String] = []
         if moveExisting {
-            NoteStore.moveContents(from: store.rootURL, to: newRoot)
+            stragglers = NoteStore.moveContents(from: oldRoot, to: newRoot)
         }
         store = NoteStore(rootURL: newRoot)
         store.onWriteError = savedErrorHandler
+        connectStoreErrors()
+        if !stragglers.isEmpty {
+            storeError = Loc.t("Nie udało się przenieść \(stragglers.count) elementów — zostały w \(oldRoot.path)",
+                               "Could not move \(stragglers.count) items — they stayed in \(oldRoot.path)")
+        }
         reload()
     }
 
@@ -208,21 +252,26 @@ final class NotesModel {
 
     /// Moves a note to the trash (soft delete): it leaves the main list but its
     /// folder is preserved under `.trash/` until restored or purged.
+    ///
+    /// If the folder didn't actually move, the note stays in the list — showing
+    /// it as deleted while it's still on disk would put the screen out of step
+    /// with the store. The store reports why through `storeError`.
     func delete(_ note: Note) {
         removeObsidianMirror(for: note)
-        let trashed = store.trashNote(note)
+        guard let trashed = store.trashNote(note) else { return }
         notes.removeAll { $0.id == note.id }
         trashedNotes.insert(trashed, at: 0)
-        rebuildAttachments()
+        dropAttachments(for: note.id)
     }
 
-    /// Restores a trashed note back to its original location.
+    /// Restores a trashed note back to its original location. Leaves it in the
+    /// trash if the move failed.
     func restore(_ note: Note) {
-        let restored = store.restoreNote(note)
+        guard let restored = store.restoreNote(note) else { return }
         trashedNotes.removeAll { $0.id == note.id }
         notes.insert(restored, at: 0)
         notes.sort(by: Self.pinnedThenModified)
-        rebuildAttachments()
+        refreshAttachments(for: restored)
 
         // The mirror was removed when the note was trashed — put it back.
         if obsidianConfigProvider().autoExport {
@@ -230,10 +279,12 @@ final class NotesModel {
         }
     }
 
-    /// Permanently deletes a trashed note's folder from disk.
+    /// Permanently deletes a trashed note's folder from disk. Keeps it listed if
+    /// the folder is still there.
     func deletePermanently(_ note: Note) {
-        store.deleteNote(note)
+        guard store.deleteNote(note) else { return }
         trashedNotes.removeAll { $0.id == note.id }
+        dropAttachments(for: note.id)
     }
 
     /// Current on-disk content of a note.
@@ -359,9 +410,12 @@ final class NotesModel {
     func setTags(_ tags: [String], for note: Note) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
         let cleaned = Self.normalizeTags(tags)
-        guard cleaned != notes[index].tags else { return }
+        let previous = notes[index].tags
+        guard cleaned != previous else { return }
         notes[index].tags = cleaned
-        store.updateMeta(notes[index])
+        // Roll the chip back if meta.json didn't take it, so the tag bar can't
+        // show a tag the note doesn't actually carry.
+        if !store.updateMeta(notes[index]) { notes[index].tags = previous }
     }
 
     /// Trims, drops empties, and removes case-insensitive duplicates (keeping
@@ -404,38 +458,64 @@ final class NotesModel {
 
     // MARK: - Attachments & links
 
-    /// Rebuilds `attachments` by scanning every note: files (images and other
-    /// documents) come from each note's `attachments/` folder, links are
-    /// detected inside the note's markdown content. Notes keep their list order.
+    /// Rebuilds the whole attachment cache by reading every note off the disk.
+    /// Only for `reload()` — a single save uses `refreshAttachments(for:)`, so
+    /// typing doesn't trigger a full scan of the notes folder every second.
     private func rebuildAttachments() {
+        attachmentsByNote = Dictionary(
+            uniqueKeysWithValues: notes.map { ($0.id, attachmentRefs(for: $0)) }
+        )
+        recomposeAttachments()
+    }
+
+    /// Rescans one note and refreshes the flat list. No other note is read.
+    private func refreshAttachments(for note: Note) {
+        attachmentsByNote[note.id] = attachmentRefs(for: note)
+        recomposeAttachments()
+    }
+
+    /// Drops a note from the cache (trashed or permanently deleted).
+    private func dropAttachments(for noteID: UUID) {
+        attachmentsByNote.removeValue(forKey: noteID)
+        recomposeAttachments()
+    }
+
+    /// Flattens the cache into `attachments`, keeping the notes-list order.
+    /// Memory only — no disk access.
+    private func recomposeAttachments() {
+        attachments = notes.flatMap { attachmentsByNote[$0.id] ?? [] }
+    }
+
+    /// Everything the "Załączniki" view shows for one note: files (images and
+    /// other documents) from its `attachments/` folder, plus links detected
+    /// inside its markdown content.
+    private func attachmentRefs(for note: Note) -> [AttachmentRef] {
         var result: [AttachmentRef] = []
-        for note in notes {
-            // Files physically copied into the note's attachments/ folder — this
-            // catches drag-dropped and pasted images too, which live as visual
-            // attachments rather than as `![](…)` markdown.
-            for filename in store.attachmentFilenames(for: note) {
-                let ext = (filename as NSString).pathExtension.lowercased()
-                let kind: AttachmentRef.Kind = AttachmentRef.imageExtensions.contains(ext) ? .image : .file
-                result.append(AttachmentRef(
-                    noteID: note.id,
-                    noteTitle: note.title,
-                    kind: kind,
-                    label: filename,
-                    target: "attachments/\(filename)"
-                ))
-            }
-            // Web / mail links written anywhere in the note's markdown.
-            for link in Self.webLinks(in: store.loadContent(for: note)) {
-                result.append(AttachmentRef(
-                    noteID: note.id,
-                    noteTitle: note.title,
-                    kind: .link,
-                    label: link,
-                    target: link
-                ))
-            }
+        // Files physically copied into the note's attachments/ folder — this
+        // catches drag-dropped and pasted images too, which live as visual
+        // attachments rather than as `![](…)` markdown.
+        for filename in store.attachmentFilenames(for: note) {
+            let ext = (filename as NSString).pathExtension.lowercased()
+            let kind: AttachmentRef.Kind = AttachmentRef.imageExtensions.contains(ext) ? .image : .file
+            result.append(AttachmentRef(
+                noteID: note.id,
+                noteTitle: note.title,
+                kind: kind,
+                label: filename,
+                target: "attachments/\(filename)"
+            ))
         }
-        attachments = result
+        // Web / mail links written anywhere in the note's markdown.
+        for link in Self.webLinks(in: store.loadContent(for: note)) {
+            result.append(AttachmentRef(
+                noteID: note.id,
+                noteTitle: note.title,
+                kind: .link,
+                label: link,
+                target: link
+            ))
+        }
+        return result
     }
 
     /// All distinct http/https/mailto links in `content`, in order of appearance.
@@ -455,26 +535,7 @@ final class NotesModel {
         return links
     }
 
-    // MARK: - Collected tasks
-
-    /// All unchecked checklist items (`- [ ]`) across every note. Order follows
-    /// the notes list, then line order.
-    func openTasks() -> [TaskItem] {
-        notes.flatMap { openTasks(in: $0) }
-    }
-
-    /// Unchecked checklist items (`- [ ]`) within a single note, in line order.
-    func openTasks(in note: Note) -> [TaskItem] {
-        var items: [TaskItem] = []
-        let lines = store.loadContent(for: note).components(separatedBy: "\n")
-        for (index, line) in lines.enumerated() {
-            let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
-            guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { continue }
-            let text = MarkdownStyler.plainText(fromInline: body).trimmingCharacters(in: .whitespaces)
-            items.append(TaskItem(noteID: note.id, noteTitle: note.title, lineIndex: index, text: text))
-        }
-        return items
-    }
+    // MARK: - Task notes
 
     /// Notes flagged as planned task lists, for the "Zadania" view. Keeps the
     /// notes-list order.
@@ -486,22 +547,6 @@ final class NotesModel {
     /// "Zadania" sidebar row.
     var activeTaskCount: Int {
         notes.filter { $0.isTaskList && !$0.taskDone }.count
-    }
-
-    /// Marks a collected task as done (`- [ ]` → `- [x]`) in its source note and
-    /// persists the change immediately.
-    func completeTask(_ task: TaskItem) {
-        guard let note = notes.first(where: { $0.id == task.noteID }) else { return }
-        var lines = store.loadContent(for: note).components(separatedBy: "\n")
-        guard task.lineIndex < lines.count else { return }
-
-        let line = lines[task.lineIndex]
-        let leading = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
-        let trimmed = String(line.drop(while: { $0 == " " || $0 == "\t" }))
-        guard let (checked, body) = MarkdownStyler.parseChecklist(trimmed), !checked else { return }
-
-        lines[task.lineIndex] = leading + "- [x] " + body
-        save(note, content: lines.joined(separator: "\n"))
     }
 
     /// Persists `content` for `note`, deriving the title from the first line.
@@ -520,15 +565,17 @@ final class NotesModel {
         var current = notes[index]
         current.title = Self.deriveTitle(from: content)
         current.links = resolveLinks(in: content, excluding: current.id)
-        var saved = store.saveNote(current, content: content, richData: richData)
+        // The text didn't reach the disk: leave the list showing the last version
+        // that did, rather than marking the note as saved. `storeError` says why.
+        guard var saved = store.saveNote(current, content: content, richData: richData) else { return }
 
         // Auto-file into a category folder based on the rules (first match wins).
         if let newFolderPath = CategoryEngine.targetFolderPath(
             content: content,
             currentFolderPath: saved.folderPath,
             rules: rulesProvider()
-        ) {
-            saved = store.moveNote(saved, toFolderPath: newFolderPath)
+        ), let moved = store.moveNote(saved, toFolderPath: newFolderPath) {
+            saved = moved
         }
 
         // Drop attachment files the user removed from the note (only when the
@@ -539,7 +586,7 @@ final class NotesModel {
 
         notes[index] = saved
         notes.sort(by: Self.pinnedThenModified)
-        rebuildAttachments()
+        refreshAttachments(for: saved)
 
         if obsidianConfigProvider().autoExport {
             scheduleObsidianExport(for: saved)
@@ -553,10 +600,14 @@ final class NotesModel {
     }
 
     /// Toggles a note's pinned state, persists it, and re-sorts the list.
+    /// A failed write is undone so the pin can't disagree with the disk.
     func togglePin(_ note: Note) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
         notes[index].pinned.toggle()
-        store.updateMeta(notes[index])
+        guard store.updateMeta(notes[index]) else {
+            notes[index].pinned.toggle()
+            return
+        }
         notes.sort(by: Self.pinnedThenModified)
     }
 
@@ -565,14 +616,14 @@ final class NotesModel {
     func toggleTaskList(_ note: Note) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
         notes[index].isTaskList.toggle()
-        store.updateMeta(notes[index])
+        if !store.updateMeta(notes[index]) { notes[index].isTaskList.toggle() }
     }
 
     /// Toggles a task-note's done state (ticked off in "Zadania") and persists it.
     func toggleTaskDone(_ note: Note) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
         notes[index].taskDone.toggle()
-        store.updateMeta(notes[index])
+        if !store.updateMeta(notes[index]) { notes[index].taskDone.toggle() }
     }
 
     /// Derives a display title from the first non-empty line of the content,

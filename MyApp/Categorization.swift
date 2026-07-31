@@ -56,12 +56,27 @@ enum CategoryEngine {
         return targetCategory + "/" + leaf
     }
 
-    /// Replaces `{date}` / `{time}` placeholders with filesystem-safe strings.
+    /// Replaces `{date}` / `{time}` placeholders with filesystem-safe strings,
+    /// then confines the result to a path inside the store (see `confined`).
     static func substitute(_ pattern: String, now: Date) -> String {
         let result = pattern
             .replacingOccurrences(of: "{date}", with: formatted(now, "yyyy-MM-dd"))
             .replacingOccurrences(of: "{time}", with: formatted(now, "HH-mm-ss"))
-        return result.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        return confined(result)
+    }
+
+    /// Keeps a rule's folder pattern inside the store root.
+    ///
+    /// The pattern is typed by hand in preferences, so "../../Desktop" or a
+    /// leading "/" would otherwise move the note's folder clean out of NoteM.
+    /// Dropping every dot-prefixed component handles `.` and `..` and also keeps
+    /// notes out of the store's own reserved folders (`.trash`, `.history`),
+    /// where they would vanish from the list. Returns a plain relative path.
+    static func confined(_ path: String) -> String {
+        path.split(separator: "/")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix(".") }
+            .joined(separator: "/")
     }
 
     private static func formatted(_ date: Date, _ format: String) -> String {

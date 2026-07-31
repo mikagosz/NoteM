@@ -249,6 +249,8 @@ struct NoteDetailView: View {
         .onDisappear {
             saveTask?.cancel()
             flush()
+            // Belt and braces: never leave a reload blocked by a closed editor.
+            model.endPendingEdits(for: note.id)
             controller.hideFloatingPanel()
             if dictation.phase != .idle {
                 dictationLocation = nil
@@ -275,6 +277,9 @@ struct NoteDetailView: View {
         }
         controller.onChange = { _ in
             dirty = true
+            // Hold off any iCloud reload until this text is on disk — otherwise
+            // a change arriving from another Mac would replace what's being typed.
+            model.beginPendingEdits(for: note.id)
             scheduleSave()
         }
         controller.titlesProvider = { [model, note] in
@@ -396,12 +401,18 @@ struct NoteDetailView: View {
         guard let textView = controller.textView else { return }
         let attributed = textView.attributedString()
         let markdown = MarkdownStyler.markdown(from: attributed)
-        guard dirty || markdown != loadedMarkdown else { return }
+        guard dirty || markdown != loadedMarkdown else {
+            model.endPendingEdits(for: note.id)
+            return
+        }
         let richData = NoteRichArchive.data(from: attributed)
         let referenced = referencedAttachmentNames(in: attributed, markdown: markdown)
         model.save(note, content: markdown, richData: richData, referencedAttachments: referenced)
         loadedMarkdown = markdown
         dirty = false
+        // The text is on disk (or the save failed and told the user) — external
+        // reloads may run again.
+        model.endPendingEdits(for: note.id)
     }
 
     /// Names of attachment files the note still uses: inline image attachments
