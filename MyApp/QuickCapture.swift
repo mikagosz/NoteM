@@ -79,15 +79,26 @@ final class QuickCaptureManager {
     func start(model: NotesModel, settings: AppSettings) {
         self.model = model
         self.settings = settings
-        refresh()
+        // No system prompt on launch. The grant is tied to the app's code
+        // signature, so an ad-hoc ("Sign to Run Locally") build looks like a new
+        // app to macOS after every rebuild and the prompt would come back every
+        // single time, however many times it was already granted. The Quick
+        // Capture settings pane shows the live status and a button to System
+        // Settings, which is where an actual fix belongs.
+        refresh(promptIfNeeded: false)
     }
 
     /// Re-reads settings: installs or removes the monitors accordingly.
-    func refresh() {
+    ///
+    /// - Parameter promptIfNeeded: ask macOS for Accessibility when it hasn't
+    ///   been granted. Only true when the user just switched the feature on —
+    ///   that's an explicit action, so a prompt is expected rather than a
+    ///   surprise.
+    func refresh(promptIfNeeded: Bool = true) {
         stopMonitors()
         hideTrigger()
         guard let settings, settings.quickCaptureEnabled else { return }
-        if !Accessibility.isTrusted { Accessibility.prompt() }
+        if promptIfNeeded, !Accessibility.isTrusted { Accessibility.prompt() }
         installMonitors()
     }
 
