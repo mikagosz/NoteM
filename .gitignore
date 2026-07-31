@@ -1,6 +1,13 @@
 # macOS
 .DS_Store
 
+# Klucze i certyfikaty — .p12 zawiera klucz prywatny do podpisywania kodu
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+
 # Xcode — user-specific state, never shared
 xcuserdata/
 *.xcuserstate
