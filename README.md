@@ -1,7 +1,16 @@
-# NoteM
+<p align="center">
+  <img src="docs/assets/notem-icon.png" width="160" alt="NoteM app icon">
+</p>
 
-A native macOS notes app that keeps your notes as plain files you own — one folder
-per note, markdown inside, no database and no account.
+## NoteM
+
+**Your notes, as files you own.**
+A native macOS notes app: one folder per note, markdown inside, no database and no
+account.
+
+[![Xcode 26+](https://img.shields.io/badge/Xcode-26%2B-147EFB?logo=xcode&logoColor=white)](https://developer.apple.com/xcode/)
+[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white)](https://www.apple.com/macos)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Built with SwiftUI and AppKit. Rich text editing, on-device semantic search, live
 dictation, drawing, and a one-way bridge into an Obsidian vault.
