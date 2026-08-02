@@ -97,6 +97,12 @@ final class SyncManager {
 
         // When we ourselves write the manifest, update lastManifestDate so
         // the next poll won't treat our own change as an external one.
+        // `start` runs once per window (⌘N opens a second one), so drop the
+        // previous registration instead of stacking another one on top.
+        if let manifestObserver {
+            NotificationCenter.default.removeObserver(manifestObserver)
+            self.manifestObserver = nil
+        }
         manifestObserver = NotificationCenter.default.addObserver(
             forName: .noteMStoreDidWriteManifest,
             object: nil,

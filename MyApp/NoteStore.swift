@@ -488,6 +488,11 @@ final class NoteStore {
         let folderComponents = folderURL.standardizedFileURL.pathComponents
         guard folderComponents.count > rootComponents.count,
               Array(folderComponents.prefix(rootComponents.count)) == rootComponents else {
+            // Can't be expressed relative to the root, so the fallback below is a
+            // guess — every later path built from it points somewhere else than
+            // the note actually lives. Say so instead of failing quietly.
+            onDataError?(Loc.t("Folder notatki leży poza magazynem: \(folderURL.path)",
+                               "Note folder lies outside the store: \(folderURL.path)"))
             return folderURL.lastPathComponent
         }
         return folderComponents.dropFirst(rootComponents.count).joined(separator: "/")

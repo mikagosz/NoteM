@@ -35,6 +35,8 @@ struct NoteDetailView: View {
     @State private var dictationLength = 0
     /// Problem with dictation, shown as an alert.
     @State private var voiceError: String?
+    /// Problem with a PDF export / print job, shown as an alert.
+    @State private var exportError: String?
     /// Confirmation before the note is copied into the Obsidian vault.
     @State private var showObsidianConfirm = false
     /// Opens the Settings window (gear lives in the right toolbar cluster).
@@ -126,7 +128,12 @@ struct NoteDetailView: View {
             if showDrawing {
                 DrawingEditorView { url in
                     showDrawing = false
-                    guard let url, let textView = controller.textView as? NoteTextView else { return }
+                    guard let url else { return }
+                    // The drawing is handed over as a file in the temp folder;
+                    // `insertAttachments` copies it into the note's attachments/,
+                    // so the original has nothing left to do.
+                    defer { try? FileManager.default.removeItem(at: url) }
+                    guard let textView = controller.textView as? NoteTextView else { return }
                     textView.window?.makeFirstResponder(textView)
                     textView.insertAttachments(from: [url])
                 }
@@ -238,6 +245,13 @@ struct NoteDetailView: View {
             Text(settings.t("Notatka trafi do sejfu Obsidiana jako plik .md. Kopia w sejfie zostanie nadpisana.",
                             "The note will be copied into the Obsidian vault as an .md file, overwriting the existing copy."))
         }
+        .alert(settings.t("Eksport", "Export"),
+               isPresented: Binding(get: { exportError != nil },
+                                    set: { if !$0 { exportError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "")
+        }
         .alert(settings.t("Notatka głosowa", "Voice note"),
                isPresented: Binding(get: { voiceError != nil },
                                     set: { if !$0 { voiceError = nil } })) {
@@ -275,7 +289,7 @@ struct NoteDetailView: View {
         } else {
             controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder))
         }
-        controller.onChange = { _ in
+        controller.onChange = {
             dirty = true
             // Hold off any iCloud reload until this text is on disk — otherwise
             // a change arriving from another Mac would replace what's being typed.
@@ -347,7 +361,11 @@ struct NoteDetailView: View {
             let op = NSPrintOperation(view: textView, printInfo: info)
             op.showsPrintPanel = false
             op.showsProgressPanel = false
-            op.run()
+            // A failed run means no PDF was written — don't let that pass as success.
+            if !op.run() {
+                exportError = settings.t("Nie udało się zapisać pliku PDF w \(url.path).",
+                                         "Could not write the PDF to \(url.path).")
+            }
         }
     }
 
@@ -380,7 +398,10 @@ struct NoteDetailView: View {
         let op = NSPrintOperation(view: textView, printInfo: info)
         op.showsPrintPanel = true
         op.showsProgressPanel = true
-        op.run()
+        if !op.run() {
+            exportError = settings.t("Drukowanie nie doszło do skutku.",
+                                     "The print job did not go through.")
+        }
     }
 
     /// Debounced autosave.
@@ -399,6 +420,9 @@ struct NoteDetailView: View {
     /// that leaves the markdown identical).
     private func flush() {
         guard let textView = controller.textView else { return }
+        // Images pasted from another app have no file yet; give them one first,
+        // otherwise they can't be written to the markdown below.
+        controller.persistUnnamedImageAttachments()
         let attributed = textView.attributedString()
         let markdown = MarkdownStyler.markdown(from: attributed)
         guard dirty || markdown != loadedMarkdown else {

@@ -38,7 +38,36 @@ enum NoteRichArchive {
         return archiver.encodedData
     }
 
+    /// Everything NoteM legitimately stores inside a note's attributed string:
+    /// the text and its attribute containers, fonts and colours, paragraph and
+    /// list styles, tables, and inline image attachments with their bytes.
+    /// Used as the allow-list for secure decoding, so an archive can't ask for
+    /// arbitrary classes to be instantiated.
+    static let allowedClasses: [AnyClass] = [
+        NSAttributedString.self, NSMutableAttributedString.self,
+        NSDictionary.self, NSMutableDictionary.self,
+        NSArray.self, NSMutableArray.self,
+        NSString.self, NSMutableString.self,
+        NSNumber.self, NSValue.self, NSData.self, NSDate.self, NSURL.self,
+        NSFont.self, NSColor.self, NSImage.self, NSShadow.self,
+        NSParagraphStyle.self, NSMutableParagraphStyle.self, NSTextList.self,
+        NSTextTable.self, NSTextTableBlock.self, NSTextBlock.self,
+        NSTextAttachment.self, FittingTextAttachment.self,
+        NSTextAttachmentCell.self, FileWrapper.self
+    ]
+
+    /// Decodes an archive with secure coding on — the only form used for data
+    /// that didn't come from this app's own storage.
+    static func secureAttributedString(from data: Data) -> NSAttributedString? {
+        try? NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString
+    }
+
     static func attributedString(from data: Data) -> NSAttributedString? {
+        if let attributed = secureAttributedString(from: data) { return attributed }
+        // Fallback for note.rich only — a file in the app's own store, written by
+        // an older build whose archive may hold a class outside the list above.
+        // Losing it would mean losing the note's formatting and inline images,
+        // which is why this path stays; the clipboard never uses it.
         guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
         unarchiver.requiresSecureCoding = false
         return unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString
@@ -70,8 +99,11 @@ enum ParagraphStyleKind: String, CaseIterable {
 /// updates; the text view is attached once in `RichTextEditor.makeNSView`.
 final class RichTextController: NSObject, NSTextViewDelegate {
     weak var textView: NSTextView?
-    /// Called after any user edit, with the current attributed content.
-    var onChange: ((NSAttributedString) -> Void)?
+    /// Called after any user edit. Deliberately takes no argument: the content
+    /// is read from the text view when it's actually needed (on save), so a
+    /// keystroke doesn't copy the whole text storage — images and all — just to
+    /// say "something changed".
+    var onChange: (() -> Void)?
     /// Supplies note titles for `[[` wiki-link autocompletion.
     var titlesProvider: () -> [String] = { [] }
     /// Called when a wiki link is clicked, with the linked note's title.
@@ -233,11 +265,78 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
     }
 
+    /// Gives every inline image a file in the note's `attachments/` folder and
+    /// tags it with that filename.
+    ///
+    /// Images dropped or pasted as files arrive named. An image pasted from
+    /// another app (RTFD, a screenshot straight off the clipboard) arrives as raw
+    /// bytes inside the attachment, with no filename — and a nameless image can't
+    /// be written to markdown, so it would show in the editor but be missing from
+    /// `note.md`, from the HTML export and from the Obsidian copy. Called right
+    /// before each save, which is also when notes written before this fix get
+    /// their images materialized.
+    ///
+    /// Checkbox attachments (their paragraph is tagged `.checklist`) are skipped —
+    /// they're drawn symbols, not files.
+    func persistUnnamedImageAttachments() {
+        guard let textView, let storage = textView.textStorage, let onAddAttachment else { return }
+        let ns = storage.string as NSString
+
+        // Collect first, mutate after: writing attributes while enumerating the
+        // same storage would disturb the walk.
+        var pending: [(range: NSRange, data: Data, ext: String)] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            guard storage.attribute(.noteMAttachmentName, at: range.location, effectiveRange: nil) == nil else { return }
+            let paragraphStart = ns.paragraphRange(for: NSRange(location: range.location, length: 0)).location
+            if storage.attribute(.checklist, at: paragraphStart, effectiveRange: nil) != nil { return }
+
+            // Prefer the archived bytes with their original extension; otherwise
+            // re-encode whatever image the attachment renders as PNG.
+            if let contents = attachment.fileWrapper?.regularFileContents,
+               let filename = attachment.fileWrapper?.preferredFilename,
+               case let ext = (filename as NSString).pathExtension, !ext.isEmpty,
+               NSImage(data: contents) != nil {
+                pending.append((range, contents, ext))
+                return
+            }
+            let image = NoteTextView.image(of: attachment)
+                ?? attachment.contents.flatMap { NSImage(data: $0) }
+            guard let image, let png = Self.pngData(from: image) else { return }
+            pending.append((range, png, "png"))
+        }
+        guard !pending.isEmpty else { return }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH.mm.ss"
+        let stamp = formatter.string(from: Date())
+        let tempFolder = FileManager.default.temporaryDirectory
+
+        storage.beginEditing()
+        for (index, item) in pending.enumerated() {
+            let name = "obraz-\(stamp)-\(index + 1).\(item.ext)"
+            let tempURL = tempFolder.appendingPathComponent(name)
+            guard (try? item.data.write(to: tempURL)) != nil else { continue }
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            // The store disambiguates the name if it's already taken.
+            guard let filename = onAddAttachment(tempURL) else { continue }
+            storage.addAttribute(.noteMAttachmentName, value: filename, range: item.range)
+        }
+        storage.endEditing()
+    }
+
+    /// PNG bytes for an image, used when an attachment carries no original file.
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
     // MARK: - NSTextViewDelegate
 
     func textDidChange(_ notification: Notification) {
-        guard !isSettingText, let textView else { return }
-        onChange?(textView.attributedString())
+        guard !isSettingText else { return }
+        onChange?()
     }
 
     /// Shows / hides the floating format panel whenever the selection changes.
@@ -911,9 +1010,26 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
     // MARK: - Lists
 
+    /// The selected paragraph(s) without the trailing paragraph terminator.
+    ///
+    /// `NSString.paragraphRange(for:)` always includes the closing "\n" when the
+    /// paragraph isn't the last one in the note. Splitting that text on "\n" then
+    /// yields an extra empty component at the end, and giving it a list marker
+    /// puts the marker physically at the start of the *next* paragraph — which
+    /// then gets saved to note.md as a list item too.
+    private func selectedParagraphContentRange(in storage: NSTextStorage) -> NSRange {
+        guard let textView else { return NSRange(location: 0, length: 0) }
+        let ns = storage.string as NSString
+        let range = ns.paragraphRange(for: textView.selectedRange())
+        guard range.length > 0,
+              let last = UnicodeScalar(ns.character(at: NSMaxRange(range) - 1)),
+              CharacterSet.newlines.contains(last) else { return range }
+        return NSRange(location: range.location, length: range.length - 1)
+    }
+
     func toggleList(_ kind: String) {
         guard let textView, let storage = textView.textStorage else { return }
-        let paragraphRange = (storage.string as NSString).paragraphRange(for: textView.selectedRange())
+        let paragraphRange = selectedParagraphContentRange(in: storage)
         guard textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
 
         let paragraph = storage.attributedSubstring(from: paragraphRange)
@@ -927,7 +1043,12 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             let line = NSMutableAttributedString(
                 attributedString: paragraph.attributedSubstring(from: NSRange(location: location, length: length))
             )
-            transformLine(line, to: kind, orderedNumber: &orderedNumber)
+            // A blank line inside a multi-line selection is a gap between items,
+            // not an item — leave it alone. A lone empty line is the "start a
+            // list here and type" case, so it does get a marker.
+            if length > 0 || lineStrings.count == 1 {
+                transformLine(line, to: kind, orderedNumber: &orderedNumber)
+            }
             rebuilt.append(line)
             if index < lineStrings.count - 1 {
                 rebuilt.append(NSAttributedString(string: "\n", attributes: MarkdownStyler.defaultTypingAttributes))
@@ -946,7 +1067,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     /// paragraphs if they already are.
     func toggleChecklist() {
         guard let textView, let storage = textView.textStorage else { return }
-        let paragraphRange = (storage.string as NSString).paragraphRange(for: textView.selectedRange())
+        let paragraphRange = selectedParagraphContentRange(in: storage)
         guard textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
 
         let paragraph = storage.attributedSubstring(from: paragraphRange)
@@ -959,7 +1080,11 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             let line = NSMutableAttributedString(
                 attributedString: paragraph.attributedSubstring(from: NSRange(location: location, length: length))
             )
-            transformLineToChecklist(line)
+            // Same rule as toggleList: blank lines in a multi-line selection stay
+            // blank, a lone empty line starts a checklist.
+            if length > 0 || lineStrings.count == 1 {
+                transformLineToChecklist(line)
+            }
             rebuilt.append(line)
             if index < lineStrings.count - 1 {
                 rebuilt.append(NSAttributedString(string: "\n", attributes: MarkdownStyler.defaultTypingAttributes))
@@ -1416,7 +1541,7 @@ final class NoteTextView: NSTextView {
         }
         undoManager?.setActionName(Loc.t("Przeniesienie obrazka", "Move image"))
 
-        controller?.onChange?(attributedString())
+        controller?.onChange?()
         needsDisplay = true
     }
 
@@ -1523,7 +1648,7 @@ final class NoteTextView: NSTextView {
         }
         undoManager?.setActionName(Loc.t("Zmiana rozmiaru obrazka", "Resize image"))
 
-        controller?.onChange?(attributedString())
+        controller?.onChange?()
         needsDisplay = true
     }
 
@@ -1687,13 +1812,14 @@ final class NoteTextView: NSTextView {
 
     /// Returns `image` tinted with `color` (used for the white badge glyph).
     private static func tinted(_ image: NSImage, _ color: NSColor) -> NSImage {
-        let copy = image.copy() as! NSImage
-        copy.lockFocus()
-        color.set()
-        NSRect(origin: .zero, size: copy.size).fill(using: .sourceAtop)
-        copy.unlockFocus()
-        copy.isTemplate = false
-        return copy
+        let tinted = NSImage(size: image.size, flipped: false) { rect in
+            image.draw(in: rect)
+            color.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        tinted.isTemplate = false
+        return tinted
     }
 
     /// Draws the selection border and eight resize handles around the selected
@@ -1971,15 +2097,16 @@ final class NoteTextView: NSTextView {
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
 
-        // NoteM-to-NoteM: our private type preserves all custom attributes without RTF loss.
+        // NoteM-to-NoteM: our private type preserves all custom attributes without
+        // RTF loss. Decoded with secure coding and an explicit class list — the
+        // clipboard is shared with every process running as this user, so any app
+        // can put a "com.notem.richtext" payload there. If it doesn't decode we
+        // simply fall through to the standard types below.
         if let data = pasteboard.data(forType: .noteMRichText),
-           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) {
-            unarchiver.requiresSecureCoding = false
-            if let attributed = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString {
-                insertAttributed(attributed)
-                if let storage = textStorage { RichTextController.normalizeImageAttachments(in: storage) }
-                return
-            }
+           let attributed = NoteRichArchive.secureAttributedString(from: data) {
+            insertAttributed(attributed)
+            if let storage = textStorage { RichTextController.normalizeImageAttachments(in: storage) }
+            return
         }
 
         // Keep the source formatting 1:1 (colours, fonts, sizes, images). RTFD
@@ -2021,6 +2148,40 @@ final class NoteTextView: NSTextView {
         if insertPastedImage(from: pasteboard) { return }
 
         super.paste(sender)
+    }
+
+    /// "Wklej i dopasuj styl" (⌥⇧⌘V, also in the right-click menu) — the action
+    /// AppKit routes that item to.
+    ///
+    /// Plain ⌘V keeps the source formatting 1:1, which is what you want when
+    /// moving text between notes but not when pulling a paragraph out of a web
+    /// page. This path runs the clipboard through `PasteSanitizer`: the structure
+    /// NoteM understands (bold, italic, headers, bulleted/numbered lists, links)
+    /// survives, the page's own styling — fonts, sizes, colours, backgrounds,
+    /// margins — does not. With nothing rich on the clipboard it falls back to
+    /// AppKit's plain-text paste.
+    override func pasteAsPlainText(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        var source: NSAttributedString?
+        if let data = pasteboard.data(forType: .rtfd) {
+            source = NSAttributedString(rtfd: data, documentAttributes: nil)
+        } else if let data = pasteboard.data(forType: .rtf) {
+            source = NSAttributedString(rtf: data, documentAttributes: nil)
+        } else if let data = pasteboard.data(forType: .html) {
+            source = try? NSAttributedString(
+                data: data,
+                options: [
+                    .documentType: NSAttributedString.DocumentType.html,
+                    .characterEncoding: String.Encoding.utf8.rawValue
+                ],
+                documentAttributes: nil
+            )
+        }
+        guard let source else {
+            super.pasteAsPlainText(sender)
+            return
+        }
+        insertAttributed(PasteSanitizer.sanitized(source))
     }
 
     /// Saves a pasted raw image as a file in the note's `attachments/` folder

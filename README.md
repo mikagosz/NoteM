@@ -50,8 +50,10 @@ Delete the app and your notes are still there, in a format you can read with
 - **Two storage formats, one note.** `note.md` keeps the text portable for tools
   and scripts; `note.rich` preserves everything the markdown can't express
   (colours, pasted formatting, inline images) and is what the editor displays.
-- **Paste sanitizer** — pasting from a browser brings the formatting you want
-  without dragging in the web page's styling.
+- **Paste sanitizer** — *Paste and Match Style* (⌥⇧⌘V, also in the right-click
+  menu) keeps the structure worth keeping — bold, italic, headings, lists,
+  links — and drops the source's own fonts, sizes, colours and backgrounds.
+  Plain ⌘V still pastes everything exactly as copied.
 - **Drawing canvas** — sketch inside a note; the drawing lands as an attachment.
 - **Live dictation** — click the mic and the recognized text appears in the note
   as you speak. Fully on-device (`SpeechTranscriber`, falling back to

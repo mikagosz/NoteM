@@ -79,11 +79,21 @@ final class NotesModel {
     private(set) var obsidianError: String?
 
     /// Pending debounced auto-exports, keyed by note id.
-    @ObservationIgnored private var obsidianExportTasks: [UUID: Task<Void, Never>] = [:]
+    /// Each entry carries a token identifying that particular scheduling, so a
+    /// task tidying itself up can tell whether the slot is still its own.
+    @ObservationIgnored private var obsidianExportTasks: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
 
     init() {
         connectStoreErrors()
         reload()
+        configureSemanticIndex()
+    }
+
+    /// Points the semantic index at the current store root. Called again after a
+    /// storage switch — otherwise the cache would keep writing itself into the
+    /// old root, next to notes that aren't there any more, and the other Mac
+    /// would have to compute every vector from scratch.
+    private func configureSemanticIndex() {
         let indexURL = store.rootURL.appendingPathComponent("semantic_index.json")
         Task { await semanticIndex.configure(indexURL: indexURL) }
     }
@@ -156,12 +166,21 @@ final class NotesModel {
 
     /// Sets (or clears) the cover colour for a note's category and persists it.
     func setCategoryColor(_ id: String?, for note: Note) {
-        let cat = category(of: note)
-        guard !cat.isEmpty, store.setCategoryColorID(id, forCategory: cat) else { return }
+        setCategoryColor(id, forCategory: category(of: note))
+    }
+
+    /// Sets (or clears) a category's cover colour by name and persists it.
+    ///
+    /// The colour belongs to the folder, not to a note, so the name is all that's
+    /// needed. Callers that only know the folder (the sidebar) shouldn't have to
+    /// dig up a note living in it — that note can be moved or deleted between
+    /// opening the colour menu and picking a colour.
+    func setCategoryColor(_ id: String?, forCategory category: String) {
+        guard !category.isEmpty, store.setCategoryColorID(id, forCategory: category) else { return }
         if let id {
-            categoryColors[cat] = id
+            categoryColors[category] = id
         } else {
-            categoryColors.removeValue(forKey: cat)
+            categoryColors.removeValue(forKey: category)
         }
     }
 
@@ -209,6 +228,7 @@ final class NotesModel {
             storeError = Loc.t("Nie udało się przenieść \(stragglers.count) elementów — zostały w \(oldRoot.path)",
                                "Could not move \(stragglers.count) items — they stayed in \(oldRoot.path)")
         }
+        configureSemanticIndex()
         reload()
     }
 
@@ -330,25 +350,37 @@ final class NotesModel {
 
     /// Mirrors every note into the vault. Returns how many were written.
     @discardableResult
-    func exportAllToObsidian() -> Int {
-        notes.reduce(into: 0) { count, note in
-            if exportToObsidian(note) { count += 1 }
-        }
+    func exportAllToObsidian() -> (sent: Int, failed: Int) {
+        exportEach(notes.map(\.id))
     }
 
     /// Moves the mirror after the vault folder changed: drops the copies from
     /// `oldFolder` and rewrites them where the mirror now points. Only notes that
     /// already had a copy are moved. Returns how many were rewritten.
     @discardableResult
-    func relocateObsidianMirror(from oldFolder: URL) -> Int {
+    func relocateObsidianMirror(from oldFolder: URL) -> (sent: Int, failed: Int) {
         let mirrored = notes.filter { $0.obsidianPath != nil }
         for note in mirrored {
             guard let path = note.obsidianPath else { continue }
             ObsidianExport.removeMirror(relativePath: path, vaultFolder: oldFolder, noteID: note.id)
         }
-        return mirrored.reduce(into: 0) { count, note in
-            if exportToObsidian(note) { count += 1 }
+        return exportEach(mirrored.map(\.id))
+    }
+
+    /// Exports the given notes one by one and counts how many made it.
+    ///
+    /// Walks a list of ids rather than the `notes` array: `exportToObsidian`
+    /// writes the export stamp back into `notes`, and iterating the array while
+    /// it's being mutated forces a full copy of it on every note (copy-on-write),
+    /// which turns a bulk send into quadratic copying.
+    private func exportEach(_ ids: [UUID]) -> (sent: Int, failed: Int) {
+        var sent = 0
+        var failed = 0
+        for id in ids {
+            guard let note = notes.first(where: { $0.id == id }) else { continue }
+            if exportToObsidian(note) { sent += 1 } else { failed += 1 }
         }
+        return (sent, failed)
     }
 
     /// Clears a stuck export error (after the user fixed the vault path).
@@ -358,13 +390,20 @@ final class NotesModel {
     /// vault write once the note has been quiet for a few seconds, so Obsidian's
     /// file watcher doesn't see the note change on every keystroke pause.
     private func scheduleObsidianExport(for note: Note) {
-        obsidianExportTasks[note.id]?.cancel()
-        obsidianExportTasks[note.id] = Task { [weak self] in
+        obsidianExportTasks[note.id]?.task.cancel()
+        let token = UUID()
+        obsidianExportTasks[note.id] = (token, Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
+            // Clear the slot on every exit, cancellation included — but only if a
+            // newer scheduling hasn't already claimed it.
+            defer {
+                if self?.obsidianExportTasks[note.id]?.token == token {
+                    self?.obsidianExportTasks[note.id] = nil
+                }
+            }
             guard !Task.isCancelled else { return }
-            self?.obsidianExportTasks[note.id] = nil
             self?.exportToObsidian(note)
-        }
+        })
     }
 
     /// Drops a note's copy from the vault, so a note deleted in NoteM also
