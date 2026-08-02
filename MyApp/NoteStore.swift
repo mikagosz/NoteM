@@ -333,7 +333,21 @@ final class NoteStore {
     /// if needed. Returns the final filename on success.
     @discardableResult
     func addAttachment(fileURL: URL, toNote note: Note) -> String? {
-        let attachDir = url(forFolderPath: note.folderPath).appendingPathComponent("attachments", isDirectory: true)
+        let noteFolder = url(forFolderPath: note.folderPath)
+        // Never bring a folder back from the dead. The caller may be holding a
+        // copy of the note from before a filing rule moved it (or before it was
+        // trashed), and `ensureDirectory` creates intermediate folders — so this
+        // would rebuild the old path with an `attachments/` folder and no
+        // meta.json: invisible to `loadAllNotes`, while the file itself would sit
+        // somewhere other than where the note's markdown points.
+        guard fileManager.fileExists(atPath: noteFolder.appendingPathComponent(FileName.meta).path) else {
+            onDataError?(Loc.t(
+                "Nie udało się dodać załącznika „\(fileURL.lastPathComponent)” — notatki nie ma już w „\(note.folderPath)”",
+                "Could not add the attachment “\(fileURL.lastPathComponent)” — the note is no longer in “\(note.folderPath)”"))
+            return nil
+        }
+
+        let attachDir = noteFolder.appendingPathComponent("attachments", isDirectory: true)
         guard ensureDirectory(at: attachDir) else { return nil }
 
         var dest = attachDir.appendingPathComponent(fileURL.lastPathComponent)
