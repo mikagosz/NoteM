@@ -292,4 +292,30 @@ struct NoteStoreTests {
         let second = try #require(temp.store.readManifestDate())
         #expect(second >= first)
     }
+    /// P3-08: skąd brały się foldery z samym `attachments/` i bez `meta.json`.
+    /// Edytor trzyma kopię notatki sprzed przeniesienia przez regułę katalogowania,
+    /// a dodanie załącznika odtwarzało wtedy stary katalog.
+    @Test func addAttachmentRefusesToResurrectAMovedNotesFolder() {
+        let temp = TempStore()
+        let note = temp.store.createNote(title: "Notatka")
+        let stalePath = note.folderPath
+        guard let moved = temp.store.moveNote(note, toFolderPath: "Praca/" + (stalePath as NSString).lastPathComponent) else {
+            Issue.record("nie udało się przenieść notatki")
+            return
+        }
+        let source = temp.makeSourceFile(named: "obraz.png")
+
+        // Stara kopia notatki — dokładnie to, co miał widok po przeniesieniu.
+        var stale = moved
+        stale.folderPath = stalePath
+        let name = temp.store.addAttachment(fileURL: source, toNote: stale)
+
+        #expect(name == nil)
+        #expect(!temp.exists(stalePath), "stary folder notatki nie ma wrócić na dysk")
+        #expect(!temp.errors.isEmpty, "użytkownik ma się dowiedzieć, że załącznik nie doszedł")
+
+        // Ta sama operacja na aktualnej kopii przechodzi normalnie.
+        #expect(temp.store.addAttachment(fileURL: source, toNote: moved) == "obraz.png")
+    }
+
 }

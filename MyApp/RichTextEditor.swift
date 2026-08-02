@@ -115,8 +115,14 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     /// highlight the buttons (bold, italic, underline, lists, checklist).
     var onActiveFormatsChange: ((ActiveFormats) -> Void)?
 
-    /// Folder of the currently loaded note; used for resolving attachment paths.
-    var noteFolder: URL?
+    /// Supplies the folder of the currently loaded note, used for resolving
+    /// attachment paths. A closure rather than a stored URL: a filing rule can
+    /// move the note between saves, and a path captured when the editor opened
+    /// would then point at a folder that no longer exists.
+    var noteFolderProvider: (() -> URL?)?
+
+    /// Folder of the currently loaded note, resolved at the moment it's needed.
+    var noteFolder: URL? { noteFolderProvider?() }
     /// Called when the user drops a file — returns the attachment filename, or nil.
     var onAddAttachment: ((URL) -> String?)?
 

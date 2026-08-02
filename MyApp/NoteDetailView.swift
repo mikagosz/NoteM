@@ -278,7 +278,12 @@ struct NoteDetailView: View {
         loadedMarkdown = markdown
         dirty = false
         let noteFolder = model.noteFolder(for: note)
-        controller.noteFolder = noteFolder
+        // Resolved live: the filing rules can move this note to another category
+        // while the editor stays open, and the path captured here would then be
+        // the old one.
+        controller.noteFolderProvider = { [model, id = note.id] in
+            model.notes.first(where: { $0.id == id }).map(model.noteFolder(for:))
+        }
 
         // Prefer the full-fidelity rich archive (colours, fonts, pasted
         // formatting, images); fall back to markdown for notes saved before rich
@@ -302,8 +307,12 @@ struct NoteDetailView: View {
         controller.onOpenWikiLink = { [model] title in
             if let target = model.note(forTitle: title) { openNote(target.id) }
         }
-        controller.onAddAttachment = { [model, note] fileURL in
-            model.addAttachment(fileURL: fileURL, to: note)
+        controller.onAddAttachment = { [model, id = note.id] fileURL in
+            // The model's copy, not the snapshot this view was built from —
+            // otherwise a note moved by a filing rule would take its attachments
+            // to the folder it used to live in.
+            guard let live = model.notes.first(where: { $0.id == id }) else { return nil }
+            return model.addAttachment(fileURL: fileURL, to: live)
         }
     }
 
