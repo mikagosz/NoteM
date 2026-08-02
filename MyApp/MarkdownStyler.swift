@@ -112,11 +112,10 @@ enum MarkdownStyler {
         let emoji = "✅" as NSString
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 15)]
         let size = emoji.size(withAttributes: attrs)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        emoji.draw(at: .zero, withAttributes: attrs)
-        image.unlockFocus()
-        return image
+        return NSImage(size: size, flipped: false) { _ in
+            emoji.draw(at: .zero, withAttributes: attrs)
+            return true
+        }
     }
 
     /// Builds a checklist paragraph: `[checkbox] content`, tagged `.checklist`.
@@ -327,6 +326,18 @@ enum MarkdownStyler {
             let font = attrs[.font] as? NSFont ?? bodyFont
             let traits = font.fontDescriptor.symbolicTraits
             let text = ns.substring(with: range)
+
+            // Inline image: an attachment run carrying the filename it was copied
+            // from. Without this the run would fall through as its raw U+FFFC
+            // placeholder character and the image would be missing from note.md,
+            // from the HTML export and from the Obsidian mirror.
+            // Checkbox attachments carry no filename (and their paragraph is
+            // handled by the checklist branch above), so they never match here.
+            if attrs[.attachment] != nil, let name = attrs[.noteMAttachmentName] as? String {
+                result += "![](attachments/\(name))"
+                index = NSMaxRange(range)
+                continue
+            }
 
             // Wiki link: the run text already reads "[[Title]]" — emit verbatim.
             if let url = attrs[.link] as? URL, url.scheme == wikiScheme {

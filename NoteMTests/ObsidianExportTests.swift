@@ -233,6 +233,30 @@ struct ObsidianExportTests {
         #expect(read(foreign) == "nie moja notatka")
     }
 
+    /// Deleting a note used to take the whole `Zalaczniki/<nazwa>` folder with
+    /// it, name match and nothing else. Files the user put there themselves have
+    /// to survive — only what our own copy embedded goes.
+    @Test func removeMirrorKeepsFilesItDidNotPutThere() throws {
+        let (vault, noteFolder) = makeVault()
+        try Data("obrazek".utf8).write(to: noteFolder.appendingPathComponent("attachments/rysunek.png"))
+        let note = Note(title: "Do usunięcia", folderPath: "Praca/x")
+
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "![r](attachments/rysunek.png)", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+
+        // Coś, czego NoteM tam nie włożył, w tym samym folderze.
+        let folder = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Do usunięcia")
+        let foreign = folder.appendingPathComponent("moje-zdjecie.png")
+        try Data("cudze".utf8).write(to: foreign)
+
+        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id)
+
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("rysunek.png").path))
+        #expect(read(foreign) == "cudze")
+    }
+
     @Test func removeMirrorLeavesACopyBelongingToAnotherNote() throws {
         let (vault, noteFolder) = makeVault()
         let mine = Note(title: "Moja", folderPath: "Praca/x")

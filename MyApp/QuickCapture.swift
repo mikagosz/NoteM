@@ -72,6 +72,18 @@ final class QuickCaptureManager {
     /// move off the corner onto the icon to click it without it vanishing.
     private let cornerKeep: CGFloat = 80
 
+    /// Squares of side `2 × cornerKeep` around every enabled corner of every
+    /// screen — the only places where a cursor move can change anything.
+    ///
+    /// `handleMouseMoved` runs for *every* mouse move in the system, so it tests
+    /// these cached rectangles first and returns; without them each move would
+    /// walk `NSScreen.screens` and measure distances on the main thread.
+    private var hotZones: [CGRect] = []
+    /// The corner set the cache was built from, so changing the setting rebuilds it.
+    private var hotZoneCorners: Set<QuickCaptureCorner> = []
+    /// Drops the cache when displays are added, removed or rearranged.
+    private var screenParametersObserver: (any NSObjectProtocol)?
+
     /// Global shortcut that opens the capture panel directly: ⌥⌘N.
     private let hotKeyCode: UInt16 = 45 // "n"
     private let hotKeyModifiers: NSEvent.ModifierFlags = [.command, .option]
@@ -127,6 +139,14 @@ final class QuickCaptureManager {
             self?.handleMouseMoved()
             return event
         }
+
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.hotZones = [] }
+        }
     }
 
     private func stopMonitors() {
@@ -137,6 +157,11 @@ final class QuickCaptureManager {
         keyLocalMonitor = nil
         mouseGlobalMonitor = nil
         mouseLocalMonitor = nil
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
+        hotZones = []
     }
 
     private func matchesHotKey(_ event: NSEvent) -> Bool {
@@ -156,6 +181,19 @@ final class QuickCaptureManager {
         }
     }
 
+    /// Rebuilds the cached hot zones for the given corners across all screens.
+    private func rebuildHotZones(for corners: Set<QuickCaptureCorner>) {
+        hotZoneCorners = corners
+        hotZones = NSScreen.screens.flatMap { screen in
+            corners.map { corner in
+                let point = cornerPoint(for: corner, in: screen.frame)
+                // Chebyshev distance ≤ cornerKeep is exactly this square.
+                return CGRect(x: point.x - cornerKeep, y: point.y - cornerKeep,
+                              width: cornerKeep * 2, height: cornerKeep * 2)
+            }
+        }
+    }
+
     /// Chebyshev distance from a point to a corner (max of x/y gaps).
     private func cornerDistance(_ loc: CGPoint, _ corner: QuickCaptureCorner, in frame: NSRect) -> CGFloat {
         let point = cornerPoint(for: corner, in: frame)
@@ -168,6 +206,18 @@ final class QuickCaptureManager {
     private func handleMouseMoved() {
         guard let settings, settings.quickCaptureEnabled else { return }
         let loc = NSEvent.mouseLocation
+
+        // Cheap rejection first — true for practically every mouse move in a
+        // day's work, and it costs a handful of rectangle tests.
+        let corners = settings.quickCaptureCorners
+        if hotZones.isEmpty || corners != hotZoneCorners { rebuildHotZones(for: corners) }
+        if triggerCorner == nil, !hotZones.contains(where: { $0.contains(loc) }) {
+            // Outside every keep radius, so a corner suppressed after opening a
+            // note has now been properly left behind.
+            suppressedCorner = nil
+            return
+        }
+
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(loc, $0.frame, false) }) else {
             hideTrigger()
             suppressedCorner = nil

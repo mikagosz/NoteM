@@ -570,16 +570,15 @@ final class NoteDrawingView: NSView {
         content = content.insetBy(dx: -8, dy: -8)
         guard content.width > 1, content.height > 1 else { return nil }
 
-        let image = NSImage(size: content.size)
-        image.lockFocusFlipped(true)
-        NSGraphicsContext.current?.cgContext.translateBy(x: -content.minX, y: -content.minY)
-        for shape in shapes { drawShape(shape) }
-        for text in texts { drawText(text) }
-        if !drawing.bounds.isEmpty {
-            drawing.image(from: content, scale: 2).draw(in: content)
+        return NSImage(size: content.size, flipped: true) { [self] _ in
+            NSGraphicsContext.current?.cgContext.translateBy(x: -content.minX, y: -content.minY)
+            for shape in shapes { drawShape(shape) }
+            for text in texts { drawText(text) }
+            if !drawing.bounds.isEmpty {
+                drawing.image(from: content, scale: 2).draw(in: content)
+            }
+            return true
         }
-        image.unlockFocus()
-        return image
     }
 }
 

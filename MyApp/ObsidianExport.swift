@@ -104,7 +104,10 @@ enum ObsidianExport {
 
         let now = Date()
         let folder = category.isEmpty ? CategoryEngine.inbox : category
-        let relativeFolder = folder.split(separator: "/").map(slug).joined(separator: "/")
+        // Wywołanie w domknięciu, nie `map(slug)`: `slug` sięga po `Loc`, więc
+        // zostaje na głównym aktorze, a przekazanie jej jako wartości do `map`
+        // wychodziłoby poza izolację (ostrzeżenie, a w Swift 6 błąd).
+        let relativeFolder = folder.split(separator: "/").map { slug($0) }.joined(separator: "/")
         let baseName = slug(note.title.isEmpty ? Loc.t("Notatka", "Note") : note.title)
 
         // Wybierz nazwę pliku, która jest wolna albo należy do tej samej notatki.
@@ -151,13 +154,47 @@ enum ObsidianExport {
     /// jeśli plik faktycznie należy do tej notatki.
     static func removeMirror(relativePath: String, vaultFolder: URL, noteID: UUID) {
         let fileURL = vaultFolder.appendingPathComponent(relativePath)
+        // Przeczytaj kopię, zanim zniknie: jej własne osadzenia mówią dokładnie,
+        // które pliki w „Zalaczniki” należą do tej notatki. Kasowanie całego
+        // folderu po nazwie zabrałoby też pliki, które użytkownik sam tam włożył,
+        // gdyby nazwa folderu pokryła się ze slugiem notatki.
+        let ourAttachments = embeddedAttachmentPaths(in: (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "")
         guard removeOwnedFile(at: fileURL, noteID: noteID) else { return }
 
+        let fm = FileManager.default
+        for path in ourAttachments {
+            guard let decodedPath = confinedVaultPath(path) else { continue }
+            try? fm.removeItem(at: vaultFolder.appendingPathComponent(decodedPath))
+        }
+
+        // Folder znika tylko wtedy, gdy nic w nim nie zostało.
         let base = (fileURL.lastPathComponent as NSString).deletingPathExtension
         let attachments = vaultFolder
             .appendingPathComponent(attachmentsDir, isDirectory: true)
             .appendingPathComponent(base, isDirectory: true)
-        try? FileManager.default.removeItem(at: attachments)
+        if let remaining = try? fm.contentsOfDirectory(atPath: attachments.path), remaining.isEmpty {
+            try? fm.removeItem(at: attachments)
+        }
+    }
+
+    /// Ścieżki `Zalaczniki/…` osadzone w kopii notatki — zarówno obrazki
+    /// (`![[Zalaczniki/notatka/plik.png]]`), jak i pliki
+    /// (`[[Zalaczniki/notatka/umowa.pdf|umowa.pdf]]`). Zwykłe linki wiki do innych
+    /// notatek nie mają tego przedrostka, więc się tu nie łapią.
+    private static func embeddedAttachmentPaths(in markdown: String) -> [String] {
+        let prefix = NSRegularExpression.escapedPattern(for: attachmentsDir)
+        let pattern = "!?\\[\\[(" + prefix + "/[^\\]|]+)"
+        let ns = markdown as NSString
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length))
+            .map { ns.substring(with: $0.range(at: 1)).trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// Ścieżka względna, która na pewno nie wychodzi poza sejf.
+    private static func confinedVaultPath(_ path: String) -> String? {
+        let components = path.split(separator: "/").map(String.init)
+        guard !components.isEmpty, !components.contains("..") else { return nil }
+        return components.joined(separator: "/")
     }
 
     // MARK: - Frontmatter
@@ -180,7 +217,9 @@ enum ObsidianExport {
     }
 
     /// Cytowany skalar YAML — bezpieczny dla dwukropków, cudzysłowów i emoji.
-    private static func yamlString(_ text: String) -> String {
+    /// `nonisolated`, bo funkcja jest czysto tekstowa i jest przekazywana jako
+    /// wartość do `map` w kontekście bez izolacji aktora.
+    nonisolated private static func yamlString(_ text: String) -> String {
         let escaped = text
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -449,8 +488,12 @@ struct ObsidianSettingsView: View {
                         .font(.callout)
                     Spacer()
                     Button(settings.t("Wyślij wszystkie teraz", "Send all now")) {
-                        let count = model.exportAllToObsidian()
-                        bulkResult = settings.t("Wysłano \(count) notatek.", "Sent \(count) notes.")
+                        let result = model.exportAllToObsidian()
+                        let total = result.sent + result.failed
+                        bulkResult = result.failed == 0
+                            ? settings.t("Wysłano \(result.sent) notatek.", "Sent \(result.sent) notes.")
+                            : settings.t("Wysłano \(result.sent) z \(total) notatek — \(result.failed) nieudanych.",
+                                         "Sent \(result.sent) of \(total) notes — \(result.failed) failed.")
                     }
                 }
                 if let bulkResult {
@@ -484,10 +527,16 @@ struct ObsidianSettingsView: View {
         settings.obsidianVaultPath = url.path
         model.clearObsidianError()
         // Zabierz kopie ze starego folderu, żeby nie zostały tam sieroty.
-        let moved = model.relocateObsidianMirror(from: previous)
-        bulkResult = moved > 0
-            ? settings.t("Przeniesiono \(moved) notatek do nowego folderu.",
-                         "Moved \(moved) notes to the new folder.")
-            : nil
+        let result = model.relocateObsidianMirror(from: previous)
+        if result.failed > 0 {
+            bulkResult = settings.t(
+                "Przeniesiono \(result.sent) notatek — \(result.failed) nie udało się zapisać w nowym folderze.",
+                "Moved \(result.sent) notes — \(result.failed) could not be written to the new folder.")
+        } else if result.sent > 0 {
+            bulkResult = settings.t("Przeniesiono \(result.sent) notatek do nowego folderu.",
+                                    "Moved \(result.sent) notes to the new folder.")
+        } else {
+            bulkResult = nil
+        }
     }
 }

@@ -25,7 +25,19 @@ enum HTMLExport {
                 },
                 wikiHref: { _ in nil }
             )
-            try? html.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try html.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                // The app's rule is that a write which didn't reach the disk gets
+                // said out loud — an export that silently produced nothing is the
+                // worst kind, because the user walks away believing it worked.
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = Loc.t("Nie udało się zapisać pliku HTML",
+                                          "Could not write the HTML file")
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
         }
     }
 
@@ -210,7 +222,10 @@ enum HTMLExport {
                 }
                 return "<img src=\"data:\(mime);base64,\(data.base64EncodedString())\" alt=\"\(alt)\">"
             }
-            return "<img src=\"\(src)\" alt=\"\(alt)\">"
+            guard let safeSrc = safeImageSource(src) else {
+                return "<span class=\"attachment\">🖼 \(alt.isEmpty ? src : alt)</span>"
+            }
+            return "<img src=\"\(safeSrc)\" alt=\"\(alt)\">"
         }
         // Links: [label](url) — attachment files render as a plain label,
         // web links stay clickable.
@@ -220,7 +235,8 @@ enum HTMLExport {
             if attachmentName(href) != nil {
                 return "<span class=\"attachment\">📎 \(label)</span>"
             }
-            return "<a href=\"\(href)\">\(label)</a>"
+            guard let safeHref = safeLinkTarget(href) else { return label }
+            return "<a href=\"\(safeHref)\">\(label)</a>"
         }
         // Wiki links: [[Title]]
         s = RegexReplace.apply(s, pattern: "\\[\\[([^\\]]+)\\]\\]") { groups in
@@ -259,10 +275,53 @@ enum HTMLExport {
         }
     }
 
+    /// Escapes everything that could break out of text *or* out of an attribute
+    /// value. The quotes matter: link targets and alt texts are interpolated
+    /// straight into `href="…"` / `alt="…"`, so a note containing
+    /// `[x](a" onmouseover="alert(1))` would otherwise become a live handler in
+    /// the exported page — which opens as `file://`, with no origin to stop it.
     private static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+    // MARK: - Link targets
+
+    /// Schemes allowed for a clickable link. Anything else — `javascript:` above
+    /// all — is rendered as plain text instead.
+    private static let allowedLinkSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// The lowercased scheme of a target, or `nil` when it's a relative path
+    /// (relative targets are harmless and stay as they are).
+    private static func scheme(of target: String) -> String? {
+        guard let colon = target.firstIndex(of: ":") else { return nil }
+        let candidate = target[target.startIndex..<colon].lowercased()
+        // A real scheme starts with a letter and holds only letters, digits and
+        // + - . — so "./notes:2026" reads as a relative path, not a scheme.
+        guard let first = candidate.first, first.isLetter,
+              candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == "." })
+        else { return nil }
+        return candidate
+    }
+
+    /// The target for `href="…"`, or `nil` when the link must not be clickable.
+    private static func safeLinkTarget(_ href: String) -> String? {
+        let target = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let scheme = scheme(of: target) else { return target }
+        return allowedLinkSchemes.contains(scheme) ? target : nil
+    }
+
+    /// The target for `img src="…"`, or `nil` when the image must not be loaded.
+    /// `data:` is allowed here — that's how the note's own attachments are
+    /// embedded — but only for image payloads.
+    private static func safeImageSource(_ src: String) -> String? {
+        let target = src.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let scheme = scheme(of: target) else { return target }
+        if scheme == "data" { return target.lowercased().hasPrefix("data:image/") ? target : nil }
+        return ["http", "https"].contains(scheme) ? target : nil
     }
 
 }

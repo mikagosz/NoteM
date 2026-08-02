@@ -127,6 +127,39 @@ extension View {
     for window in NSApp.windows { walk(window.contentView) }
 }
 
+/// Keeps the thin scrollers applied whenever a window becomes key or is resized.
+///
+/// The observers watch *all* windows (`object: nil`) and each pass walks the
+/// whole view tree of every window, so one registration is enough for the entire
+/// app. `ContentView.onAppear` runs once per window (⌘N opens another), which is
+/// why `start()` has to be idempotent: a second set of observers would mean a
+/// second full tree walk on every resize step.
+@MainActor
+final class OverlayScrollerWatcher {
+    static let shared = OverlayScrollerWatcher()
+
+    private var tokens: [any NSObjectProtocol] = []
+
+    func start() {
+        guard tokens.isEmpty else { return }
+        for name in [NSWindow.didBecomeKeyNotification,
+                     NSWindow.didResizeNotification,
+                     NSWindow.didEndLiveResizeNotification] {
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in applyOverlayScrollersToAllWindows() }
+            }
+            tokens.append(token)
+        }
+    }
+
+    /// Not used while the app runs (the watcher lives as long as the app does),
+    /// but keeps the registration symmetric and testable.
+    func stop() {
+        tokens.forEach(NotificationCenter.default.removeObserver)
+        tokens.removeAll()
+    }
+}
+
 extension Date {
     /// App-wide display format for note dates, e.g. "09.07.26r. - 09:17" (PL) or
     /// "09.07.26 - 09:17" (EN). Follows the app language.
@@ -569,7 +602,7 @@ struct ContentView: View {
                                 count: count,
                                 isActive: noteFilter == .folder(folder),
                                 iconTint: tint,
-                                onSetColor: { id in model.setCategoryColor(id, for: model.notes.first { model.category(of: $0) == folder }!) }
+                                onSetColor: { id in model.setCategoryColor(id, forCategory: folder) }
                             ) {
                                 selection = nil
                                 noteFilter = (noteFilter == .folder(folder)) ? nil : .folder(folder)
@@ -670,11 +703,7 @@ struct ContentView: View {
                 for delay in [0.2, 0.6, 1.2, 2.0] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { applyOverlayScrollersToAllWindows() }
                 }
-                for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification] {
-                    NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                        Task { @MainActor in applyOverlayScrollersToAllWindows() }
-                    }
-                }
+                OverlayScrollerWatcher.shared.start()
             }
             .onChange(of: settings.themeID) {
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
@@ -1177,12 +1206,11 @@ private struct FolderColorMenu: NSViewRepresentable {
         /// A small filled-circle colour swatch for a menu item.
         private static func swatch(_ color: NSColor) -> NSImage {
             let size = NSSize(width: 12, height: 12)
-            let image = NSImage(size: size)
-            image.lockFocus()
-            color.setFill()
-            NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
-            image.unlockFocus()
-            return image
+            return NSImage(size: size, flipped: false) { rect in
+                color.setFill()
+                NSBezierPath(ovalIn: rect).fill()
+                return true
+            }
         }
     }
 }
@@ -1291,12 +1319,11 @@ private struct NoteRightClickMenu: NSViewRepresentable {
         /// A small filled-circle colour swatch for a menu item.
         private static func swatch(_ color: NSColor) -> NSImage {
             let size = NSSize(width: 12, height: 12)
-            let image = NSImage(size: size)
-            image.lockFocus()
-            color.setFill()
-            NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)).fill()
-            image.unlockFocus()
-            return image
+            return NSImage(size: size, flipped: false) { rect in
+                color.setFill()
+                NSBezierPath(ovalIn: rect).fill()
+                return true
+            }
         }
     }
 }
@@ -1941,11 +1968,16 @@ struct NoteCard: View {
         let flat = snippet
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let q = trimmedQuery.lowercased()
-        guard !q.isEmpty, let match = flat.lowercased().range(of: q) else {
+        // Search `flat` itself, case-insensitively, so the index we get back
+        // belongs to the string we then slice. Measuring on `flat.lowercased()`
+        // and indexing `flat` drifts apart for any character whose length changes
+        // with case, and an offset past the end kills the process.
+        guard !trimmedQuery.isEmpty,
+              let match = flat.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive])
+        else {
             return String(flat.prefix(160))
         }
-        let startOffset = flat.lowercased().distance(from: flat.startIndex, to: match.lowerBound)
+        let startOffset = flat.distance(from: flat.startIndex, to: match.lowerBound)
         let from = max(0, startOffset - 40)
         let start = flat.index(flat.startIndex, offsetBy: from)
         let window = String(flat[start...].prefix(200))

@@ -38,6 +38,10 @@ final class VoiceDictation {
     /// Waits for the recognizer to finalize pending results after stopping.
     private var finishAnalysis: (() async -> Void)?
     private var resultsTask: Task<Void, Never>?
+    /// The legacy `SFSpeechRecognizer` job, kept so it can be cancelled on stop.
+    /// Without cancelling, its last result arrives after the session is over and
+    /// overwrites a range of the note the user may already have moved past.
+    private var legacyTask: SFSpeechRecognitionTask?
     /// Finalized phrases of the session, in spoken order.
     private var finalizedText = ""
     /// Tentative tail of the session, replaced on every refinement.
@@ -94,6 +98,11 @@ final class VoiceDictation {
         finishAnalysis = nil
         await resultsTask?.value
         resultsTask = nil
+        // The legacy path has nothing to await: `stop()` returns immediately and
+        // the recognizer would still deliver one more result afterwards, landing
+        // in a note whose text has since moved on. Cancel it instead.
+        legacyTask?.cancel()
+        legacyTask = nil
         phase = .idle
         startedAt = nil
     }
@@ -271,13 +280,17 @@ final class VoiceDictation {
         // z `speechRecognitionMetadata`) i kolejne wyniki częściowe zaczynają
         // od zera — dlatego zamknięty segment dokleja się do `finalizedText`,
         // a wyniki częściowe podmieniają tylko bieżącą końcówkę.
-        recognizer.recognitionTask(with: request) { [weak self] result, _ in
+        legacyTask = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             guard let result else { return }
             let text = result.bestTranscription.formattedString
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let segmentDone = result.isFinal || result.speechRecognitionMetadata != nil
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // A result that arrives after the microphone was switched off
+                // belongs to a session that no longer exists — writing it would
+                // replace whatever the user has typed since.
+                guard self.phase == .listening else { return }
                 if segmentDone {
                     self.appendFinalized(text)
                     self.volatileText = ""
