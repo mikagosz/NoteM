@@ -22,16 +22,29 @@ enum ObsidianExport {
             )
 
     /// Nazwa folderu w korzeniu sejfu, do którego trafiają notatki z NoteM.
-    static let folderName = "Notatki NoteM"
+    /// Emoji jest częścią nazwy katalogu w sejfie — sejf przeszedł na foldery
+    /// z emoji 2026-08-02 i ta stała musi się z nim zgadzać.
+    static let folderName = "🗒️ Inbox NoteM"
 
     /// Domyślny folder w sejfie, do którego trafiają notatki.
     static let defaultVaultFolder = vaultRoot.appendingPathComponent(folderName, isDirectory: true).path
 
-    /// Poprzedni domyślny folder (notatka projektowa NoteM w „Programy MacOS”).
-    /// Zapisane ustawienie wskazujące tutaj przestawiamy na nowy domyślny —
-    /// dokumentacja projektu ma tam zostać, notatki idą do korzenia sejfu.
-    static let legacyVaultFolder = vaultRoot
-        .appendingPathComponent("Programy MacOS/11-NoteM", isDirectory: true).path
+    /// Ścieżki, które kiedyś były domyślne. Zapisane ustawienie wskazujące na
+    /// którąkolwiek z nich przestawiamy na bieżący `defaultVaultFolder`:
+    ///
+    /// - notatka projektowa NoteM w „Programy MacOS” (w obu wariantach nazwy,
+    ///   sprzed i po przejściu sejfu na emoji) — dokumentacja projektu ma tam
+    ///   zostać, notatki idą do korzenia sejfu;
+    /// - „Notatki NoteM” — poprzednia nazwa folderu docelowego w korzeniu.
+    ///
+    /// Migracja jest potrzebna, bo eksport tworzy brakujący katalog sam
+    /// (`export(...)`), więc bez niej stara ścieżka odrodziłaby się jako pusty
+    /// folder w sejfie zamiast zgłosić błąd.
+    static let legacyVaultFolders: [String] = [
+        "Programy MacOS/11-NoteM",
+        "🟡 Programy MacOS/11-NoteM",
+        "Notatki NoteM",
+    ].map { vaultRoot.appendingPathComponent($0, isDirectory: true).path }
 
     /// Podfolder na załączniki skopiowane razem z notatkami.
     static let attachmentsDir = "Zalaczniki"

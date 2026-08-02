@@ -216,10 +216,14 @@ final class AppSettings {
         self.obsidianConnected = defaults.bool(forKey: Self.obsidianConnectedKey)
         // Once connected, mirroring on save is the expected behaviour.
         self.obsidianAutoExport = defaults.object(forKey: Self.obsidianAutoKey) as? Bool ?? true
+        // No stored path, or one that used to be the default, means we fall back to
+        // the current default; anything else is a deliberate choice and stays put.
         let storedVaultPath = defaults.string(forKey: Self.obsidianPathKey)
-        self.obsidianVaultPath = (storedVaultPath == nil || storedVaultPath == ObsidianExport.legacyVaultFolder)
-            ? ObsidianExport.defaultVaultFolder
-            : storedVaultPath!
+        if let storedVaultPath, !ObsidianExport.legacyVaultFolders.contains(storedVaultPath) {
+            self.obsidianVaultPath = storedVaultPath
+        } else {
+            self.obsidianVaultPath = ObsidianExport.defaultVaultFolder
+        }
         self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
         self.startLayout = StartLayout(rawValue: defaults.string(forKey: Self.startLayoutKey) ?? "")
             ?? .sections
