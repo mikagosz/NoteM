@@ -10,8 +10,8 @@ import Observation
 final class NotesModel {
     private var store: NoteStore
 
-    /// Indeks semantyczny (Priorytet 3): wektory znaczeniowe notatek do trybu
-    /// wyszukiwania "znaczeniowo". Aktor — liczy poza głównym wątkiem.
+    /// Semantic index (Priority 3): meaning vectors for the "by meaning" search
+    /// mode. An actor — it computes off the main thread.
     nonisolated let semanticIndex = SemanticIndex()
 
     /// Notes currently known to the UI, sorted by `modified` descending.
@@ -27,7 +27,7 @@ final class NotesModel {
     private(set) var categoryColors: [String: String] = [:]
 
     /// Every attachment / image / link found across all notes, for the
-    /// "Załączniki" view. Rebuilt whenever the notes or their content change.
+    /// "Attachments" view. Rebuilt whenever the notes or their content change.
     private(set) var attachments: [AttachmentRef] = []
 
     /// Per-note attachment refs, so a save only rescans the note that changed
@@ -336,7 +336,7 @@ final class NotesModel {
     /// Writes (or rewrites) a note's `.md` copy in the Obsidian vault and stamps
     /// it with the export date. Returns `false` and sets `obsidianError` when the
     /// vault folder can't be written to. Called automatically on save when the
-    /// mirror is enabled, and from the "Wyślij do Obsidian" button.
+    /// mirror is enabled, and from the "Send to Obsidian" button.
     @discardableResult
     func exportToObsidian(_ note: Note) -> Bool {
         guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return false }
@@ -554,7 +554,7 @@ final class NotesModel {
         attachments = notes.flatMap { attachmentsByNote[$0.id] ?? [] }
     }
 
-    /// Everything the "Załączniki" view shows for one note: files (images and
+    /// Everything the "Attachments" view shows for one note: files (images and
     /// other documents) from its `attachments/` folder, plus links detected
     /// inside its markdown content.
     private func attachmentRefs(for note: Note) -> [AttachmentRef] {

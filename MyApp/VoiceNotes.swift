@@ -3,12 +3,12 @@ import Foundation
 import Observation
 import Speech
 
-/// Notatki głosowe (Priorytet 4): dyktowanie na żywo.
+/// Voice notes (Priority 4): live dictation.
 ///
-/// Klik mikrofonu → aplikacja słucha i rozpoznany tekst pojawia się w notatce
-/// od razu w trakcie mówienia (żaden plik audio nie jest zapisywany).
-/// Rozpoznawanie działa on-device: najpierw nowy `SpeechTranscriber`
-/// (macOS 26, obsługuje polski), a gdy niedostępny — starszy
+/// Click the microphone and the app listens; recognised text appears in the note
+/// as you speak (no audio file is ever written).
+/// Recognition runs on-device: the newer `SpeechTranscriber` first
+/// (macOS 26, supports Polish), falling back to the older
 /// `SFSpeechRecognizer` w trybie on-device.
 @MainActor
 @Observable
@@ -61,10 +61,10 @@ final class VoiceDictation {
         finalizedText = ""
         volatileText = ""
 
-        // Polski ma pierwszeństwo niezależnie od silnika: nowy SpeechTranscriber
-        // nie zna polskiego (stan macOS 26), więc dla polskiego używany jest
+        // Polish takes precedence whatever the engine: the new SpeechTranscriber
+        // does not know Polish (as of macOS 26), so for Polish it uses
         // starszy SFSpeechRecognizer z modelem on-device. Angielski dopiero,
-        // gdy polski jest niedostępny w żadnym silniku.
+        // when Polish is unavailable in either engine.
         var started = false
         if #available(macOS 26, *) {
             started = await startModern(languagePrefix: "pl")
@@ -276,10 +276,10 @@ final class VoiceDictation {
             return false
         }
 
-        // Po pauzie w mówieniu rozpoznawanie on-device zamyka segment (wynik
-        // z `speechRecognitionMetadata`) i kolejne wyniki częściowe zaczynają
-        // od zera — dlatego zamknięty segment dokleja się do `finalizedText`,
-        // a wyniki częściowe podmieniają tylko bieżącą końcówkę.
+        // After a pause in speech, on-device recognition closes the segment (a
+        // result carrying `speechRecognitionMetadata`) and the partial results that
+        // follow start from zero — so a closed segment is appended to
+        // `finalizedText`, while partial results only replace the current tail.
         legacyTask = recognizer.recognitionTask(with: request) { [weak self] result, _ in
             guard let result else { return }
             let text = result.bestTranscription.formattedString

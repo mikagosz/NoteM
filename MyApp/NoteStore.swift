@@ -368,7 +368,7 @@ final class NoteStore {
 
     /// Deletes files in a note's `attachments/` folder that are no longer
     /// referenced by the note (their filename isn't in `keeping`). Called on save
-    /// so images the user removed from a note also leave the "Załączniki" view.
+    /// so images the user removed from a note also leave the "Attachments" view.
     /// The image bytes still live in `note.rich`, so this only drops the now
     /// redundant standalone file.
     func pruneAttachments(for note: Note, keeping names: Set<String>) {
@@ -391,7 +391,7 @@ final class NoteStore {
     }
 
     /// Filenames inside a note's `attachments/` folder, sorted. Empty when the
-    /// note has no attachments folder. Used to build the "Załączniki" index.
+    /// note has no attachments folder. Used to build the "Attachments" index.
     func attachmentFilenames(for note: Note) -> [String] {
         let dir = url(forFolderPath: note.folderPath)
             .appendingPathComponent("attachments", isDirectory: true)

@@ -2,9 +2,9 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-/// Eksport do HTML (Priorytet 6): konwersja markdownu notatki do jednego,
-/// samodzielnego pliku `.html` — style wpisane w plik, obrazki z `attachments/`
-/// osadzone jako base64, zero zależności zewnętrznych.
+/// HTML export (Priority 6): converts a note's markdown into one self-contained
+/// `.html` file — styles written into the file, images from `attachments/` embedded
+/// as base64, no external dependencies.
 enum HTMLExport {
 
     // MARK: - Save panel (single note, Zadanie 6.1)

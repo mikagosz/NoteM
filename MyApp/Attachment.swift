@@ -1,7 +1,7 @@
 import Foundation
 
 /// A single attachment / image / link discovered across the notes, surfaced in
-/// the "Załączniki" view so every reference from every note is browsable and
+/// the "Attachments" view so every reference from every note is browsable and
 /// links back to the note it lives in.
 ///
 /// Files (images and other documents) come from a note's `attachments/` folder
@@ -12,7 +12,7 @@ struct AttachmentRef: Identifiable, Hashable {
         case file    // a non-image file in the note's attachments/ folder
         case link    // an http/https/mailto link written in the note
 
-        /// Section title for the grouped "Załączniki" view.
+        /// Section title for the grouped "Attachments" view.
         func sectionTitle(_ s: AppSettings) -> String {
             switch self {
             case .image: return s.t("Zdjęcia", "Images")

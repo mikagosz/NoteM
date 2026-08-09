@@ -10,7 +10,7 @@ struct AppTheme: Identifiable, Hashable {
     /// Subtle background tint used behind the app for this theme.
     var tintedBackground: Color { accent.opacity(0.10) }
 
-    /// The built-in themes offered in Settings → Wygląd.
+    /// The built-in themes offered in Settings → Appearance.
     static let all: [AppTheme] = [
         AppTheme(id: "blue",    name: "Blue",    accent: Color(hex: 0x0055FF)),
         AppTheme(id: "purple",  name: "Purple",  accent: Color(hex: 0x8800FF)),

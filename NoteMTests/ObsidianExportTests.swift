@@ -246,7 +246,7 @@ struct ObsidianExportTests {
             noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
         )
 
-        // Coś, czego NoteM tam nie włożył, w tym samym folderze.
+        // Something NoteM did not put there, in the same folder.
         let folder = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Do usunięcia")
         let foreign = folder.appendingPathComponent("moje-zdjecie.png")
         try Data("cudze".utf8).write(to: foreign)

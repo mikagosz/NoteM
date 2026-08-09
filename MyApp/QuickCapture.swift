@@ -396,7 +396,7 @@ final class QuickCaptureTriggerPanel: NSPanel {
 /// The clickable corner icon. Fills the panel edge-to-edge so it sits flush in
 /// the very corner of the screen.
 struct QuickCaptureTriggerView: View {
-    /// Accent colour from the app theme, so the icon matches Settings → Wygląd.
+    /// Accent colour from the app theme, so the icon matches Settings → Appearance.
     let color: Color
     let action: () -> Void
     @State private var hovering = false
@@ -509,8 +509,8 @@ struct QuickCaptureView: View {
             // bottom-right corner of the note.
             .overlay(alignment: .bottomTrailing) {
                 VStack(alignment: .trailing, spacing: 8) {
-                    // Mostek do Obsidiana — nad ikonką zadań, tylko gdy sejf
-                    // jest połączony w ustawieniach.
+                    // The Obsidian bridge — above the tasks icon, only when a vault
+                    // is connected in Settings.
                     if obsidianConnected {
                         Button {
                             showObsidianConfirm = true

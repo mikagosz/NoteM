@@ -26,30 +26,30 @@ struct NotesModelObsidianStampTests {
 
     /// A note that already lives in the vault.
     private func makeExportedNote(in model: NotesModel) -> Note {
-        let note = model.createNote(content: "Próba kontrolna kosza")
-        #expect(model.exportToObsidian(note), "Eksport musi się udać, inaczej test nie bada tego, co miał")
+        let note = model.createNote(content: "Trash control note")
+        #expect(model.exportToObsidian(note), "The export must succeed, or the test is not testing what it claims")
         let exported = model.notes.first { $0.id == note.id }
         #expect(exported?.obsidianPath != nil)
         return exported ?? note
     }
 
-    // MARK: 1. Ręczny mostek: przywrócenie zdejmuje znacznik, bo kopia nie wraca
+    // MARK: 1. Manual bridge: restoring clears the stamp, because the copy stays gone
 
     @Test func restoreWithoutAutoExport_clearsTheStamp() throws {
         let (model, _, _) = makeModel(autoExport: false)
         let note = makeExportedNote(in: model)
 
-        model.delete(note)          // kosz kasuje kopię w sejfie
+        model.delete(note)          // trashing deletes the copy in the vault
         let trashed = try #require(model.trashedNotes.first { $0.id == note.id })
         model.restore(trashed)
 
         let restored = try #require(model.notes.first { $0.id == note.id })
         #expect(restored.obsidianPath == nil,
-                "Kryształ nie może świecić na zielono nad plikiem, którego nie ma")
+                "The crystal must not glow green over a file that does not exist")
         #expect(restored.obsidianExportedAt == nil)
     }
 
-    // MARK: 2. Automatyczny mostek: kopia wraca, więc znacznik zostaje
+    // MARK: 2. Automatic bridge: the copy comes back, so the stamp stays
 
     @Test func restoreWithAutoExport_keepsTheStampBecauseTheCopyIsBack() throws {
         let (model, _, vault) = makeModel(autoExport: true)
@@ -58,22 +58,22 @@ struct NotesModelObsidianStampTests {
 
         model.delete(note)
         #expect(!FileManager.default.fileExists(atPath: vault.appendingPathComponent(path).path),
-                "Kosz ma zabrać kopię z sejfu")
+                "Trashing must take the copy out of the vault")
 
         let trashed = try #require(model.trashedNotes.first { $0.id == note.id })
         model.restore(trashed)
 
         let restored = try #require(model.notes.first { $0.id == note.id })
-        #expect(restored.obsidianPath != nil, "Kopia wróciła, więc znacznik jest prawdą")
+        #expect(restored.obsidianPath != nil, "The copy is back, so the stamp tells the truth")
         #expect(FileManager.default.fileExists(atPath: vault.appendingPathComponent(path).path),
-                "…a prawdą jest tylko wtedy, gdy plik faktycznie leży w sejfie")
+                "…and it is only true when the file really sits in the vault")
     }
 
-    // MARK: 3. Nigdy niewysłana notatka przechodzi kosz bez zmian
+    // MARK: 3. A note never sent passes through the trash unchanged
 
     @Test func restoreOfANeverExportedNote_changesNothing() throws {
         let (model, _, _) = makeModel(autoExport: false)
-        let note = model.createNote(content: "Nigdy niewysłana")
+        let note = model.createNote(content: "Never sent")
         #expect(model.notes.first { $0.id == note.id }?.obsidianPath == nil)
 
         model.delete(note)

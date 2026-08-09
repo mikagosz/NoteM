@@ -1,16 +1,15 @@
 import Foundation
 import NaturalLanguage
 
-/// Indeks semantyczny (Priorytet 3): dla każdej notatki trzyma wektor
-/// znaczeniowy liczony on-device przez `NLContextualEmbedding` (wielojęzyczny
-/// model Apple — obsługuje polski, w przeciwieństwie do `NLEmbedding`).
-/// Wyszukiwanie "znaczeniowe" porównuje wektor zapytania z wektorami notatek
+/// Semantic index (Priority 3): holds a meaning vector for every note, computed
+/// on-device by `NLContextualEmbedding` (Apple's multilingual model — it supports
+/// Polish, unlike `NLEmbedding`).
+/// The "by meaning" search compares the query vector with the note vectors
 /// (cosine similarity) i zwraca najlepsze dopasowania.
 ///
-/// Wektory są cache'owane w `semantic_index.json` w katalogu notatnika i
-/// przeliczane przyrostowo — tylko dla notatek, których treść się zmieniła
-/// (porównanie po stabilnym hashu FNV-1a, bo `hashValue` Swifta zmienia się
-/// między uruchomieniami).
+/// The vectors are cached in `semantic_index.json` in the notes folder and
+/// recomputed incrementally — only for notes whose content changed (compared by a
+/// stable FNV-1a hash, because Swift's `hashValue` differs between runs).
 actor SemanticIndex {
     private struct Entry: Codable {
         var hash: UInt64

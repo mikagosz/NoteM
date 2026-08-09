@@ -2,18 +2,19 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// Mostek do Obsidiana: kopiuje notatki NoteM do sejfu jako zwykłe pliki `.md`
-/// z frontmatterem YAML, żeby Obsidian (i Claude czytający sejf) widział je jako
+/// The Obsidian bridge: copies NoteM notes into the vault as plain `.md` files
+/// with YAML front matter, so that Obsidian (and anything else reading the vault)
+/// sees them as
 /// normalne notatki markdown.
 ///
-/// Kierunek jest jednostronny — NoteM jest źródłem prawdy, kopia w sejfie jest
-/// nadpisywana przy każdym eksporcie. Dlatego przed nadpisaniem / usunięciem
-/// pliku sprawdzamy w jego frontmatterze `notem-id`: ruszamy wyłącznie pliki,
-/// które sami wcześniej utworzyliśmy dla tej samej notatki. Plik napisany ręcznie
-/// w Obsidianie nigdy nie zostanie nadpisany — eksport wybierze wtedy inną nazwę.
+/// The direction is one-way — NoteM is the source of truth and the vault copy is
+/// overwritten on every export. That is why, before overwriting or deleting a file,
+/// its front matter is checked for `notem-id`: only files we created for that same
+/// note are ever touched. A file written by hand in Obsidian is never overwritten —
+/// the export picks a different name instead.
 enum ObsidianExport {
 
-    /// Korzeń sejfu Obsidiana.
+    /// Root of the Obsidian vault.
     private static let vaultRoot =
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
@@ -21,40 +22,41 @@ enum ObsidianExport {
                 isDirectory: true
             )
 
-    /// Nazwa folderu w korzeniu sejfu, do którego trafiają notatki z NoteM.
-    /// Emoji jest częścią nazwy katalogu w sejfie — sejf przeszedł na foldery
-    /// z emoji 2026-08-02 i ta stała musi się z nim zgadzać.
+    /// Name of the folder at the vault root that receives NoteM's notes.
+    /// The emoji is part of the folder name in the vault — the vault moved to
+    /// emoji folders on 2026-08-02 and this constant has to match it.
     static let folderName = "🗒️ Inbox NoteM"
 
-    /// Domyślny folder w sejfie, do którego trafiają notatki.
+    /// Default folder in the vault that receives the notes.
     static let defaultVaultFolder = vaultRoot.appendingPathComponent(folderName, isDirectory: true).path
 
-    /// Ścieżki, które kiedyś były domyślne. Zapisane ustawienie wskazujące na
-    /// którąkolwiek z nich przestawiamy na bieżący `defaultVaultFolder`:
+    /// Paths that used to be the default. A stored setting pointing at any of them
+    /// is moved to the current `defaultVaultFolder`:
     ///
     /// - notatka projektowa NoteM w „Programy MacOS” (w obu wariantach nazwy,
-    ///   sprzed i po przejściu sejfu na emoji) — dokumentacja projektu ma tam
-    ///   zostać, notatki idą do korzenia sejfu;
+    ///   before and after the vault moved to emoji) — the project documentation
+    ///   stays there, the notes go to the vault root;
     /// - „Notatki NoteM” — poprzednia nazwa folderu docelowego w korzeniu.
     ///
-    /// Migracja jest potrzebna, bo eksport tworzy brakujący katalog sam
-    /// (`export(...)`), więc bez niej stara ścieżka odrodziłaby się jako pusty
-    /// folder w sejfie zamiast zgłosić błąd.
+    /// The migration is needed because the export creates a missing folder itself
+    /// (`export(...)`), so without it an old path would quietly reappear as an empty
+    /// folder in the vault instead of reporting an error.
     static let legacyVaultFolders: [String] = [
         "Programy MacOS/11-NoteM",
         "🟡 Programy MacOS/11-NoteM",
         "Notatki NoteM",
     ].map { vaultRoot.appendingPathComponent($0, isDirectory: true).path }
 
-    /// Podfolder na załączniki skopiowane razem z notatkami.
+    /// Subfolder for attachments copied along with the notes.
     static let attachmentsDir = "Zalaczniki"
 
-    /// Klucz frontmattera, po którym rozpoznajemy własne pliki.
+    /// The front matter key by which our own files are recognised.
     private static let idKey = "notem-id"
 
-    // MARK: - Wynik i błędy
+    // MARK: - Result and errors
 
-    /// Co powstało w sejfie: ścieżka pliku względem folderu eksportu i moment zapisu.
+    /// What was produced in the vault: the file path relative to the export folder,
+    /// and when it was written.
     struct Outcome {
         let relativePath: String
         let exportedAt: Date
@@ -78,14 +80,14 @@ enum ObsidianExport {
 
     // MARK: - Eksport
 
-    /// Zapisuje notatkę w sejfie i zwraca ścieżkę oraz datę eksportu.
+    /// Writes the note into the vault and returns its path and export date.
     ///
     /// - Parameters:
-    ///   - category: kategoria notatki w NoteM — staje się podfolderem w sejfie.
-    ///   - noteFolder: folder notatki w NoteM (źródło załączników).
+    ///   - category: the note's category in NoteM — becomes a subfolder in the vault.
+    ///   - noteFolder: the note's folder in NoteM (the source of attachments).
     ///   - vaultFolder: folder docelowy w sejfie Obsidiana.
-    ///   - previousRelativePath: gdzie notatka leżała po poprzednim eksporcie;
-    ///     jeśli zmieniła tytuł lub kategorię, stary plik jest sprzątany.
+    ///   - previousRelativePath: where the note sat after the previous export; if
+    ///     its title or category changed, the old file is cleaned up.
     @discardableResult
     static func export(
         note: Note,
@@ -104,13 +106,13 @@ enum ObsidianExport {
 
         let now = Date()
         let folder = category.isEmpty ? CategoryEngine.inbox : category
-        // Wywołanie w domknięciu, nie `map(slug)`: `slug` sięga po `Loc`, więc
-        // zostaje na głównym aktorze, a przekazanie jej jako wartości do `map`
-        // wychodziłoby poza izolację (ostrzeżenie, a w Swift 6 błąd).
+        // Called inside a closure rather than as `map(slug)`: `slug` reaches for
+        // `Loc`, so it stays on the main actor, and passing it as a value to `map`
+        // would step outside that isolation (a warning, and an error in Swift 6).
         let relativeFolder = folder.split(separator: "/").map { slug($0) }.joined(separator: "/")
         let baseName = slug(note.title.isEmpty ? Loc.t("Notatka", "Note") : note.title)
 
-        // Wybierz nazwę pliku, która jest wolna albo należy do tej samej notatki.
+        // Pick a filename that is either free or already belongs to this note.
         let fileName = availableFileName(
             base: baseName,
             in: vaultFolder.appendingPathComponent(relativeFolder, isDirectory: true),
@@ -121,8 +123,8 @@ enum ObsidianExport {
 
         try? fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-        // Załączniki lądują w podfolderze nazwanym jak plik notatki (razem z
-        // ewentualnym sufiksem), więc dwie notatki o tym samym tytule nie dzielą
+        // Attachments land in a subfolder named after the note's file (suffix and
+        // all), so two notes with the same title do not share
         // jednego folderu, a `removeMirror` trafia potem w to samo miejsce.
         let attachmentsPrefix = attachmentsDir + "/" + (fileName as NSString).deletingPathExtension
         let body = rewriteAttachments(
@@ -141,8 +143,8 @@ enum ObsidianExport {
             throw ExportError.writeFailed(fileName)
         }
 
-        // Notatka mogła zmienić tytuł albo kategorię — usuń poprzednią kopię
-        // razem z jej folderem załączników, żeby w sejfie nie zostawały sieroty.
+        // The note may have changed title or category — remove the previous copy
+        // together with its attachment folder, so no orphans are left in the vault.
         if let previousRelativePath, previousRelativePath != relativePath {
             removeMirror(relativePath: previousRelativePath, vaultFolder: vaultFolder, noteID: note.id)
         }
@@ -150,14 +152,14 @@ enum ObsidianExport {
         return Outcome(relativePath: relativePath, exportedAt: now)
     }
 
-    /// Usuwa kopię notatki z sejfu razem z jej folderem załączników — ale tylko
-    /// jeśli plik faktycznie należy do tej notatki.
+    /// Removes a note's copy from the vault along with its attachment folder — but
+    /// only if the file really belongs to that note.
     static func removeMirror(relativePath: String, vaultFolder: URL, noteID: UUID) {
         let fileURL = vaultFolder.appendingPathComponent(relativePath)
-        // Przeczytaj kopię, zanim zniknie: jej własne osadzenia mówią dokładnie,
-        // które pliki w „Zalaczniki” należą do tej notatki. Kasowanie całego
-        // folderu po nazwie zabrałoby też pliki, które użytkownik sam tam włożył,
-        // gdyby nazwa folderu pokryła się ze slugiem notatki.
+        // Read the copy before it goes: its own embeds say exactly which files in
+        // "Zalaczniki" belong to this note. Deleting the whole
+        // folder by name would also take files the user put there themselves, if
+        // the folder name happened to match the note's slug.
         let ourAttachments = embeddedAttachmentPaths(in: (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "")
         guard removeOwnedFile(at: fileURL, noteID: noteID) else { return }
 
@@ -167,7 +169,7 @@ enum ObsidianExport {
             try? fm.removeItem(at: vaultFolder.appendingPathComponent(decodedPath))
         }
 
-        // Folder znika tylko wtedy, gdy nic w nim nie zostało.
+        // The folder goes only when nothing is left in it.
         let base = (fileURL.lastPathComponent as NSString).deletingPathExtension
         let attachments = vaultFolder
             .appendingPathComponent(attachmentsDir, isDirectory: true)
@@ -177,10 +179,10 @@ enum ObsidianExport {
         }
     }
 
-    /// Ścieżki `Zalaczniki/…` osadzone w kopii notatki — zarówno obrazki
+    /// The `Zalaczniki/…` paths embedded in the note's copy — both images
     /// (`![[Zalaczniki/notatka/plik.png]]`), jak i pliki
-    /// (`[[Zalaczniki/notatka/umowa.pdf|umowa.pdf]]`). Zwykłe linki wiki do innych
-    /// notatek nie mają tego przedrostka, więc się tu nie łapią.
+    /// (`[[Zalaczniki/note/contract.pdf|contract.pdf]]`). Ordinary wiki links to
+    /// other notes carry no such prefix, so they are not picked up here.
     private static func embeddedAttachmentPaths(in markdown: String) -> [String] {
         let prefix = NSRegularExpression.escapedPattern(for: attachmentsDir)
         let pattern = "!?\\[\\[(" + prefix + "/[^\\]|]+)"
@@ -190,7 +192,7 @@ enum ObsidianExport {
             .map { ns.substring(with: $0.range(at: 1)).trimmingCharacters(in: .whitespaces) }
     }
 
-    /// Ścieżka względna, która na pewno nie wychodzi poza sejf.
+    /// A relative path that provably cannot climb out of the vault.
     private static func confinedVaultPath(_ path: String) -> String? {
         let components = path.split(separator: "/").map(String.init)
         guard !components.isEmpty, !components.contains("..") else { return nil }
@@ -216,9 +218,9 @@ enum ObsidianExport {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// Cytowany skalar YAML — bezpieczny dla dwukropków, cudzysłowów i emoji.
+    /// A quoted YAML scalar — safe for colons, quotes and emoji.
     /// `nonisolated`, bo funkcja jest czysto tekstowa i jest przekazywana jako
-    /// wartość do `map` w kontekście bez izolacji aktora.
+    /// as a value to `map` in a context without actor isolation.
     nonisolated private static func yamlString(_ text: String) -> String {
         let escaped = text
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -238,9 +240,9 @@ enum ObsidianExport {
         return formatter
     }()
 
-    // MARK: - Załączniki
+    // MARK: - Attachments
 
-    /// Kopiuje załączniki notatki do sejfu i zamienia odwołania `attachments/…`
+    /// Copies the note's attachments into the vault and rewrites `attachments/…`
     /// na osadzenia w stylu Obsidiana (`![[Zalaczniki/notatka/plik.png]]`).
     private static func rewriteAttachments(
         in markdown: String,
@@ -252,7 +254,7 @@ enum ObsidianExport {
         let targetFolder = vaultFolder.appendingPathComponent(attachmentsPrefix, isDirectory: true)
         var copied = Set<String>()
 
-        /// Kopiuje pojedynczy plik do sejfu; zwraca ścieżkę do wpisania w notatce.
+        /// Copies one file into the vault; returns the path to write into the note.
         func copyIfNeeded(_ name: String) -> String? {
             let source = sourceFolder.appendingPathComponent(name)
             guard fm.fileExists(atPath: source.path) else { return nil }
@@ -276,7 +278,7 @@ enum ObsidianExport {
             return "[[" + path + "|" + groups[1] + "]]"
         }
 
-        // Posprzątaj po załącznikach, których notatka już nie używa.
+        // Clean up after attachments the note no longer uses.
         if let existing = try? fm.contentsOfDirectory(at: targetFolder, includingPropertiesForKeys: nil) {
             for item in existing where !copied.contains(item.lastPathComponent) {
                 try? fm.removeItem(at: item)
@@ -288,14 +290,14 @@ enum ObsidianExport {
     private static func decoded(_ rawName: String) -> String? {
         let trimmed = rawName.trimmingCharacters(in: .whitespaces)
         let name = trimmed.removingPercentEncoding ?? trimmed
-        // Nazwa musi zostać pojedynczym plikiem — żadnego wychodzenia z folderu.
+        // The name has to stay a single file — no climbing out of the folder.
         guard !name.isEmpty, !name.contains("/"), name != ".." else { return nil }
         return name
     }
 
-    // MARK: - Nazwy plików
+    // MARK: - Filenames
 
-    /// Zamienia tytuł na nazwę pliku bezpieczną dla dysku i Obsidiana.
+    /// Turns a title into a filename safe for the disk and for Obsidian.
     static func slug(_ text: some StringProtocol) -> String {
         let forbidden = CharacterSet(charactersIn: "/\\:*?\"<>|#^[]")
         var cleaned = String(text)
@@ -311,24 +313,24 @@ enum ObsidianExport {
         return String(cleaned.prefix(80))
     }
 
-    /// Nazwa `.md` wolna albo należąca już do tej notatki. Cudzych plików
+    /// An `.md` name that is free or already belongs to this note. Somebody else's
     /// (bez naszego `notem-id` albo z innym) nie ruszamy — dostajemy sufiks.
     private static func availableFileName(base: String, in folder: URL, noteID: UUID) -> String {
         let candidate = base + ".md"
         if isFree(folder.appendingPathComponent(candidate), noteID: noteID) { return candidate }
 
-        // Stabilny sufiks — ta sama notatka zawsze dostaje tę samą nazwę.
+        // A stable suffix — the same note always gets the same name.
         let suffixed = base + "-" + noteID.uuidString.prefix(8).lowercased() + ".md"
         return suffixed
     }
 
-    /// Czy pod tym adresem można pisać: pusto albo nasz plik dla tej notatki.
+    /// Whether this address is writable: empty, or our own file for this note.
     private static func isFree(_ url: URL, noteID: UUID) -> Bool {
         guard FileManager.default.fileExists(atPath: url.path) else { return true }
         return ownerID(of: url) == noteID
     }
 
-    /// Usuwa plik tylko wtedy, gdy jego frontmatter wskazuje na tę notatkę.
+    /// Deletes the file only when its front matter points at this note.
     @discardableResult
     private static func removeOwnedFile(at url: URL, noteID: UUID) -> Bool {
         guard FileManager.default.fileExists(atPath: url.path), ownerID(of: url) == noteID else { return false }
@@ -354,11 +356,11 @@ enum ObsidianExport {
 
 // MARK: - ObsidianMark
 
-/// Znaczek Obsidiana — kryształ z `Assets.xcassets`. Stan niesie sam obrazek:
-/// fioletowy (oryginalny) znaczy, że notatki jeszcze nie ma w sejfie, zielony,
-/// że jest już wysłana.
+/// The Obsidian marker — a crystal from `Assets.xcassets`. The image itself carries
+/// the state: violet (the original) means the note is not in the vault yet, green
+/// means it has been sent.
 struct ObsidianMark: View {
-    /// Czy notatka ma już kopię w sejfie.
+    /// Whether the note already has a copy in the vault.
     var sent: Bool
     var size: CGFloat = 16
 
@@ -371,8 +373,8 @@ struct ObsidianMark: View {
     }
 }
 
-/// Pływający przycisk „wyślij do Obsidiana" — kryształ na materiałowym krążku,
-/// żeby był widoczny i na czarnym, i na białym tle notatki.
+/// The floating "send to Obsidian" button — a crystal on a material disc, so it
+/// stays visible over both a black and a white note background.
 struct ObsidianSendButton: View {
     var sent: Bool
     var help: String
@@ -449,7 +451,7 @@ struct ObsidianSettingsView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.1)))
             }
 
-            // Reszta ustawień ma sens dopiero po połączeniu z sejfem.
+            // The rest of the settings only make sense once the vault is connected.
             VStack(alignment: .leading, spacing: 14) {
                 Divider()
 
@@ -475,7 +477,7 @@ struct ObsidianSettingsView: View {
                                 + "subfolders named after their NoteM categories, attachments in “\(ObsidianExport.attachmentsDir)”."))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    // Bez tego długa podpowiedź ucina się zamiast zawinąć.
+                    // Without this a long hint is truncated instead of wrapping.
                     .fixedSize(horizontal: false, vertical: true)
 
                 Divider()
@@ -526,7 +528,7 @@ struct ObsidianSettingsView: View {
 
         settings.obsidianVaultPath = url.path
         model.clearObsidianError()
-        // Zabierz kopie ze starego folderu, żeby nie zostały tam sieroty.
+        // Take the copies out of the old folder, so no orphans are left there.
         let result = model.relocateObsidianMirror(from: previous)
         if result.failed > 0 {
             bulkResult = settings.t(

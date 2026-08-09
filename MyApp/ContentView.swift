@@ -218,8 +218,8 @@ struct SettingsView: View {
                     .tag(p)
             }
         }
-        // 540, nie 460: pasek zakładek zjada część wysokości okna, a panele
-        // potrzebują tyle miejsca, ile miały w układzie z paskiem bocznym.
+        // 540, not 460: the tab bar eats part of the window height, and the panes
+        // need as much room as they had in the sidebar layout.
         .frame(width: 700, height: 540)
         .tint(settings.theme.accent)
     }
@@ -678,7 +678,7 @@ struct ContentView: View {
                     if let error = SyncManager.shared.syncError {
                         StatusBanner(icon: "exclamationmark.icloud.fill", message: error)
                     }
-                    // Mostek do Obsidiana nie dowiózł notatki (np. zły folder sejfu).
+                    // The Obsidian bridge did not deliver the note (e.g. a wrong vault folder).
                     if let error = model.obsidianError {
                         StatusBanner(icon: "exclamationmark.triangle.fill", message: error) {
                             model.clearObsidianError()
@@ -991,7 +991,7 @@ struct NoteRow: View {
                     .foregroundStyle(isSelected ? AnyShapeStyle(.white.opacity(0.9)) : AnyShapeStyle(.secondary))
             }
             Spacer(minLength: 4)
-            // Znacznik: notatka ma kopię w sejfie Obsidiana.
+            // Marker: the note has a copy in the Obsidian vault.
             if let exportedAt = note.obsidianExportedAt {
                 ObsidianMark(sent: true, size: 13)
                     .help(Loc.t("Wysłano do Obsidiana \(exportedAt.noteMDisplay)",
@@ -1492,7 +1492,7 @@ private struct TaskNoteRow: View {
     }
 }
 
-/// "Załączniki": every image, file and link found across all notes, grouped by
+/// "Attachments": every image, file and link found across all notes, grouped by
 /// kind. Each row shows the item and the note it lives in; tapping opens that
 /// note, and the arrow button opens the file/link itself.
 struct AttachmentsView: View {
@@ -1548,7 +1548,7 @@ struct AttachmentsView: View {
     }
 }
 
-/// A single row in the "Załączniki" view: a thumbnail (images) or icon, the
+/// A single row in the "Attachments" view: a thumbnail (images) or icon, the
 /// item's label, the note it belongs to, and a button to open the file/link.
 private struct AttachmentRow: View {
     let ref: AttachmentRef
@@ -1615,7 +1615,7 @@ private struct AttachmentRow: View {
     }
 }
 
-/// Layout options for the Start page, chosen in Settings → Wygląd.
+/// Layout options for the Start page, chosen in Settings → Appearance.
 enum StartLayout: String, CaseIterable, Identifiable {
     case sections, columns, stacks
     var id: String { rawValue }

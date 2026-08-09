@@ -292,9 +292,9 @@ struct NoteStoreTests {
         let second = try #require(temp.store.readManifestDate())
         #expect(second >= first)
     }
-    /// P3-08: skąd brały się foldery z samym `attachments/` i bez `meta.json`.
-    /// Edytor trzyma kopię notatki sprzed przeniesienia przez regułę katalogowania,
-    /// a dodanie załącznika odtwarzało wtedy stary katalog.
+    /// P3-08: where folders holding only `attachments/` and no `meta.json` came from.
+    /// The editor holds a copy of the note from before a filing rule moved it, and
+    /// adding an attachment then recreated the old folder.
     @Test func addAttachmentRefusesToResurrectAMovedNotesFolder() {
         let temp = TempStore()
         let note = temp.store.createNote(title: "Notatka")
@@ -305,7 +305,7 @@ struct NoteStoreTests {
         }
         let source = temp.makeSourceFile(named: "obraz.png")
 
-        // Stara kopia notatki — dokładnie to, co miał widok po przeniesieniu.
+        // The stale copy of the note — exactly what the view held after the move.
         var stale = moved
         stale.folderPath = stalePath
         let name = temp.store.addAttachment(fileURL: source, toNote: stale)

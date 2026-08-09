@@ -108,8 +108,8 @@ struct NoteDetailView: View {
                           onToggleDictation: { Task { await toggleDictation() } })
             }
         }
-        // Mostek do Obsidiana — kryształ w prawym dolnym rogu notatki. Bez
-        // połączenia sejfu w ustawieniach ikonka w ogóle się nie pojawia.
+        // The Obsidian bridge — the crystal in the note's bottom right corner.
+        // Without a vault connected in Settings the icon does not appear at all.
         .overlay(alignment: .bottomTrailing) {
             if settings.obsidianConnected, !showDrawing {
                 ObsidianSendButton(
@@ -388,8 +388,8 @@ struct NoteDetailView: View {
         )
     }
 
-    /// Zapisuje bieżący tekst i wysyła notatkę do sejfu Obsidiana (ręcznie,
-    /// niezależnie od tego, czy auto-eksport jest włączony).
+    /// Saves the current text and sends the note to the Obsidian vault (by hand,
+    /// whether or not auto-export is enabled).
     private func sendToObsidian() {
         flush()
         model.exportToObsidian(note)
@@ -451,7 +451,7 @@ struct NoteDetailView: View {
     /// Names of attachment files the note still uses: inline image attachments
     /// (tagged with their filename) plus any `attachments/…` paths written in the
     /// markdown (file links). Files outside this set are pruned on save, so an
-    /// image removed from the note also leaves the "Załączniki" view.
+    /// image removed from the note also leaves the "Attachments" view.
     private func referencedAttachmentNames(in attributed: NSAttributedString, markdown: String) -> Set<String> {
         var names: Set<String> = []
         attributed.enumerateAttribute(

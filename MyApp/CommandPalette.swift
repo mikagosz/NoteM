@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Paleta poleceń (⌘K, Priorytet 5): pływające okno z polem tekstowym i listą
-/// akcji filtrowaną na żywo. Enter uruchamia zaznaczoną akcję, strzałki ↑/↓
-/// zmieniają zaznaczenie, Esc (albo klik poza oknem) zamyka.
+/// Command palette (⌘K, Priority 5): a floating window with a text field and a
+/// live-filtered list of actions. Enter runs the selected action, ↑/↓ move the
+/// selection, Esc (or a click outside) closes it.
 
 /// One action offered by the palette. Note-jump items are flagged so the
 /// empty-query view can cap how many notes it lists.
