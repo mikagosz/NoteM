@@ -8,7 +8,7 @@ import Observation
 @MainActor
 @Observable
 final class NotesModel {
-    private var store = NoteStore()
+    private var store: NoteStore
 
     /// Indeks semantyczny (Priorytet 3): wektory znaczeniowe notatek do trybu
     /// wyszukiwania "znaczeniowo". Aktor — liczy poza głównym wątkiem.
@@ -83,7 +83,12 @@ final class NotesModel {
     /// task tidying itself up can tell whether the slot is still its own.
     @ObservationIgnored private var obsidianExportTasks: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
 
-    init() {
+    /// - Parameter store: Defaults to the real store under `~/Documents/NoteM`
+    ///   (or iCloud Drive). Tests pass one rooted in a throwaway folder —
+    ///   NoteM is not sandboxed, so a test that took the default would edit the
+    ///   user's actual notes.
+    init(store: NoteStore = NoteStore()) {
+        self.store = store
         connectStoreErrors()
         reload()
         configureSemanticIndex()
@@ -294,8 +299,16 @@ final class NotesModel {
         refreshAttachments(for: restored)
 
         // The mirror was removed when the note was trashed — put it back.
-        if obsidianConfigProvider().autoExport {
-            exportToObsidian(restored)
+        //
+        // Only the automatic mirror can put it back on its own; with manual
+        // sending the copy stays gone until the user asks for it. Either way the
+        // export stamp has to stop claiming a copy that is no longer in the
+        // vault: the note's crystal is drawn from `obsidianPath`, so a stale
+        // stamp shows "already in the vault" over a file that does not exist,
+        // and the user has no reason to ever send it again.
+        let mirrored = obsidianConfigProvider().autoExport && exportToObsidian(restored)
+        if !mirrored {
+            clearObsidianStamp(for: restored.id)
         }
     }
 
@@ -404,6 +417,22 @@ final class NotesModel {
             guard !Task.isCancelled else { return }
             self?.exportToObsidian(note)
         })
+    }
+
+    /// Forgets that a note was ever mirrored, so the crystal goes back to
+    /// "not sent yet" and a manual send is offered again.
+    ///
+    /// The stamp is the only thing the UI, `meta.json` and "send all" consult —
+    /// none of them look at the vault — so it must be cleared whenever the copy
+    /// is gone for good.
+    private func clearObsidianStamp(for id: UUID) {
+        guard let index = notes.firstIndex(where: { $0.id == id }),
+              notes[index].obsidianPath != nil || notes[index].obsidianExportedAt != nil
+        else { return }
+
+        notes[index].obsidianPath = nil
+        notes[index].obsidianExportedAt = nil
+        store.updateMeta(notes[index])
     }
 
     /// Drops a note's copy from the vault, so a note deleted in NoteM also

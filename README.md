@@ -117,6 +117,10 @@ Delete the app and your notes are still there, in a format you can read with
   embed syntax. Strictly one-way: NoteM overwrites only files it created itself
   (identified by a `notem-id` in the front matter) and never touches a note you
   wrote in Obsidian.
+  Trashing a note removes its copy from the vault. Restoring it brings the copy
+  back when automatic mirroring is on; with manual sending the copy stays gone
+  and the note is marked as not sent, so the marker never claims a file that
+  isn't there.
 - **HTML** — a single self-contained page with images inlined as data URIs.
 - **PDF** and **print**, with proper margins and pagination.
 
@@ -172,7 +176,7 @@ Run Locally*, or point it at your own certificate.
 xcodebuild -project NoteM.xcodeproj -scheme NoteM -destination 'platform=macOS' test
 ```
 
-53 tests covering the storage layer, the Obsidian export and the filing engine —
+102 tests covering the storage layer, the Obsidian export and the filing engine —
 the three places where a bug costs you data rather than pixels.
 
 ## Project layout
