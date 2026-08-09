@@ -30,3 +30,8 @@ DerivedData/
 # Playgrounds
 timeline.xctimeline
 playground.xcworkspace
+
+# Materiały do budowy instalatora (teksty licencji, ReadMe, ekrany kreatora).
+# Robocze pliki autora — nie są częścią kodu i nie mają trafiać do publicznego
+# repozytorium. Wzorzec obejmuje też przyszłe instalatory innych programów.
+* - instalator/
