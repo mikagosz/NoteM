@@ -22,13 +22,25 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 /// Lightweight runtime localization shared across the app.
 ///
 /// SwiftUI views should call `AppSettings.t(_:_:)` so they re-render when the
-/// language changes; non-SwiftUI code (AppKit menus, panels) reads `Loc.t(_:_:)`,
-/// whose `language` mirror is kept in sync by `AppSettings`.
-enum Loc {
+/// language changes; non-SwiftUI code (AppKit menus, panels, error descriptions)
+/// reads `Loc.t(_:_:)`.
+///
+/// Read straight from `UserDefaults` on every call, rather than kept in a stored
+/// property that `AppSettings` mirrored into. Two reasons, and the first is the
+/// one that matters: a mutable static is shared mutable state, so `t` could only
+/// be called from the main actor — and `LocalizedError.errorDescription` is
+/// nonisolated, which made an export error unreadable under Swift 6. The second
+/// is the lesson from `StorageLocation`: two copies of one value drift, and the
+/// mirror had to be re-assigned in two places to stay honest.
+///
+/// `UserDefaults` is thread-safe and keeps its own in-memory cache, so this is a
+/// dictionary lookup, not a disk read.
+nonisolated enum Loc {
     static let key = "appLanguage"
 
-    static var language: AppLanguage =
-        AppLanguage(rawValue: UserDefaults.standard.string(forKey: key) ?? AppLanguage.pl.rawValue) ?? .pl
+    static var language: AppLanguage {
+        AppLanguage(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .pl
+    }
 
     /// Returns the Polish or English variant for the current language.
     static func t(_ pl: String, _ en: String) -> String {

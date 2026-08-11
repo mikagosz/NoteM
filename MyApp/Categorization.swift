@@ -153,8 +153,9 @@ final class AppSettings {
     /// UI language of the app (also selects the spell-checker dictionary).
     var language: AppLanguage {
         didSet {
+            // `Loc` reads this key back on every call, so writing it here is the
+            // whole of the sync — there is no second copy to keep in step.
             defaults.set(language.rawValue, forKey: Loc.key)
-            Loc.language = language
         }
     }
 
@@ -236,8 +237,7 @@ final class AppSettings {
         // Spell checking on by default; auto-correct off (opt-in).
         self.spellCheckEnabled = defaults.object(forKey: Self.spellCheckKey) as? Bool ?? true
         self.autocorrectEnabled = defaults.bool(forKey: Self.autocorrectKey)
-        self.language = AppLanguage(rawValue: defaults.string(forKey: Loc.key) ?? AppLanguage.pl.rawValue) ?? .pl
-        Loc.language = self.language
+        self.language = Loc.language
     }
 
     func addRule() {

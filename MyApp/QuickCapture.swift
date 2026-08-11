@@ -24,8 +24,12 @@ enum Accessibility {
 
     /// Shows the system prompt that adds the app to the Accessibility list.
     static func prompt() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        // The option key spelled out rather than read from
+        // `kAXTrustedCheckOptionPrompt`: that symbol is imported from C as a
+        // global `var`, which Swift 6 rejects as shared mutable state. The string
+        // is the constant's documented value and does not change — and if it ever
+        // did, the prompt simply would not appear, which is visible immediately.
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 
     /// Opens System Settings → Privacy & Security → Accessibility.

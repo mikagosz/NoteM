@@ -26,7 +26,11 @@ extension NSAttributedString.Key {
 /// Marker subclass for NoteM's inline image attachments. It renders at its
 /// natural size (or an explicit resized `bounds`) — sizing to the window is done
 /// on demand via the "fit" button, not automatically.
-final class FittingTextAttachment: NSTextAttachment {}
+///
+/// `nonisolated` to match `NSTextAttachment`: with the target defaulting to main
+/// actor isolation, the inherited `init(data:ofType:)` would be isolated while the
+/// declaration it overrides is not. A warning under Swift 5, an error under Swift 6.
+nonisolated final class FittingTextAttachment: NSTextAttachment {}
 
 /// Lossless disk format for a note's attributed string: a keyed archive that
 /// preserves colours, fonts, sizes, inline images and NoteM's custom attributes.
