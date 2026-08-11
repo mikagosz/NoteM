@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 
 /// Which screen corner reveals the quick-capture trigger.
 enum QuickCaptureCorner: String, CaseIterable, Identifiable {
@@ -40,6 +41,11 @@ enum Accessibility {
     }
 }
 
+/// Identifies NoteM's hot key to Carbon ("NotM" as a four-character code).
+/// File scope on purpose: the event handler is a C function pointer, so it can
+/// capture nothing and must reach this as a global constant.
+private let quickCaptureHotKeySignature: OSType = 0x4E6F744D
+
 /// Watches the cursor for any enabled hot corner. Reaching a corner slides out a
 /// small icon (like a macOS hot corner); clicking that icon opens the floating
 /// capture panel. A corner never opens a note on its own. New notes are created
@@ -52,10 +58,16 @@ final class QuickCaptureManager {
     private weak var model: NotesModel?
     private weak var settings: AppSettings?
 
-    private var keyGlobalMonitor: Any?
-    private var keyLocalMonitor: Any?
     private var mouseGlobalMonitor: Any?
     private var mouseLocalMonitor: Any?
+
+    /// The claimed ⌥⌘N shortcut and the Carbon handler that receives it.
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandler: EventHandlerRef?
+    /// True when macOS refused to hand over ⌥⌘N (another app already holds it).
+    /// Settings shows this, because a shortcut that silently does nothing is
+    /// indistinguishable from a broken program.
+    private(set) var hotKeyUnavailable = false
 
     /// All capture panels currently on screen. Multiple can coexist so opening
     /// a second note never dismisses the first.
@@ -85,12 +97,18 @@ final class QuickCaptureManager {
     private var hotZones: [CGRect] = []
     /// The corner set the cache was built from, so changing the setting rebuilds it.
     private var hotZoneCorners: Set<QuickCaptureCorner> = []
+    /// Whether the cache has been built at all. A separate flag rather than
+    /// "is the array empty", because with every corner switched off the array is
+    /// legitimately empty — and the old test then rebuilt it on every single
+    /// mouse move, which is exactly what the cache exists to avoid.
+    private var hotZonesBuilt = false
     /// Drops the cache when displays are added, removed or rearranged.
     private var screenParametersObserver: (any NSObjectProtocol)?
-
-    /// Global shortcut that opens the capture panel directly: ⌥⌘N.
-    private let hotKeyCode: UInt16 = 45 // "n"
-    private let hotKeyModifiers: NSEvent.ModifierFlags = [.command, .option]
+    /// Whether Accessibility was granted at the moment the monitors went in —
+    /// compared on activation, see `recheckAccessibility()`.
+    private var installedWhileTrusted = false
+    /// Watches for the app coming back to the front (e.g. from System Settings).
+    private var activationObserver: (any NSObjectProtocol)?
 
     func start(model: NotesModel, settings: AppSettings) {
         self.model = model
@@ -102,6 +120,16 @@ final class QuickCaptureManager {
         // Capture settings pane shows the live status and a button to System
         // Settings, which is where an actual fix belongs.
         refresh(promptIfNeeded: false)
+
+        // Coming back from System Settings is the moment the answer may have
+        // changed, and activation is the only signal the app gets about it.
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.recheckAccessibility() }
+        }
     }
 
     /// Re-reads settings: installs or removes the monitors accordingly.
@@ -121,18 +149,8 @@ final class QuickCaptureManager {
     // MARK: - Monitors
 
     private func installMonitors() {
-        // Keyboard shortcut ⌥⌘N. The global monitor fires while another app is
-        // frontmost; the local one covers NoteM itself (and swallows the event
-        // so it doesn't beep).
-        keyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self, self.matchesHotKey(event) else { return }
-            self.openPanel(at: nil)
-        }
-        keyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self, self.matchesHotKey(event) else { return event }
-            self.openPanel(at: nil)
-            return nil
-        }
+        installedWhileTrusted = Accessibility.isTrusted
+        installHotKey()
 
         // Hot corner: watch the cursor everywhere it moves. Global covers other
         // apps; local covers NoteM while it's frontmost.
@@ -149,16 +167,28 @@ final class QuickCaptureManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.hotZones = [] }
+            Task { @MainActor [weak self] in
+                self?.hotZones = []
+                self?.hotZonesBuilt = false
+            }
         }
     }
 
+    /// Reinstalls the monitors when the Accessibility grant has changed since
+    /// they went in. Granting the permission does not reach back into monitors
+    /// that were already installed, so without this the corner keeps doing
+    /// nothing after the user has just said yes in System Settings.
+    func recheckAccessibility() {
+        guard let settings, settings.quickCaptureEnabled else { return }
+        guard Accessibility.isTrusted != installedWhileTrusted else { return }
+        refresh(promptIfNeeded: false)
+    }
+
     private func stopMonitors() {
-        for monitor in [keyGlobalMonitor, keyLocalMonitor, mouseGlobalMonitor, mouseLocalMonitor] {
+        removeHotKey()
+        for monitor in [mouseGlobalMonitor, mouseLocalMonitor] {
             if let monitor { NSEvent.removeMonitor(monitor) }
         }
-        keyGlobalMonitor = nil
-        keyLocalMonitor = nil
         mouseGlobalMonitor = nil
         mouseLocalMonitor = nil
         if let screenParametersObserver {
@@ -166,12 +196,63 @@ final class QuickCaptureManager {
             self.screenParametersObserver = nil
         }
         hotZones = []
+        hotZonesBuilt = false
     }
 
-    private func matchesHotKey(_ event: NSEvent) -> Bool {
-        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return event.keyCode == hotKeyCode && mods == hotKeyModifiers
+    // MARK: - The ⌥⌘N shortcut
+
+    /// Claims ⌥⌘N system-wide.
+    ///
+    /// `RegisterEventHotKey` rather than a global `.keyDown` monitor, and the
+    /// difference is not cosmetic: the monitor delivers **every** keystroke typed
+    /// in **every** application — passwords included — just so the app can notice
+    /// one combination, and it only works once the user grants Accessibility.
+    /// This asks the system for that one shortcut, receives nothing else, and
+    /// needs no permission at all. Accessibility is now required by the hot
+    /// corner alone (it watches the mouse), which is what Settings says.
+    private func installHotKey() {
+        guard hotKeyRef == nil, hotKeyHandler == nil else { return }
+
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, _ -> OSStatus in
+            var id = EventHotKeyID()
+            let status = GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                                           EventParamType(typeEventHotKeyID), nil,
+                                           MemoryLayout<EventHotKeyID>.size, nil, &id)
+            guard status == noErr, id.signature == quickCaptureHotKeySignature else {
+                return OSStatus(eventNotHandledErr)
+            }
+            // Carbon delivers hot keys on the main run loop.
+            MainActor.assumeIsolated { QuickCaptureManager.shared.openPanelFromHotKey() }
+            return noErr
+        }, 1, &spec, nil, &hotKeyHandler)
+
+        let id = EventHotKeyID(signature: quickCaptureHotKeySignature, id: 1)
+        let status = RegisterEventHotKey(UInt32(kVK_ANSI_N),
+                                         UInt32(cmdKey | optionKey),
+                                         id,
+                                         GetApplicationEventTarget(),
+                                         0,
+                                         &hotKeyRef)
+        hotKeyUnavailable = status != noErr
+        guard hotKeyUnavailable else { return }
+        // Nothing will ever arrive, so don't leave the handler behind.
+        Log.failure(.quickCaptureHotKey)
+        if let hotKeyHandler { RemoveEventHandler(hotKeyHandler) }
+        hotKeyHandler = nil
     }
+
+    private func removeHotKey() {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        hotKeyRef = nil
+        if let hotKeyHandler { RemoveEventHandler(hotKeyHandler) }
+        hotKeyHandler = nil
+        hotKeyUnavailable = false
+    }
+
+    /// ⌥⌘N arrived — open a panel in the first enabled corner.
+    fileprivate func openPanelFromHotKey() { openPanel(at: nil) }
 
     // MARK: - Corner trigger
 
@@ -188,6 +269,7 @@ final class QuickCaptureManager {
     /// Rebuilds the cached hot zones for the given corners across all screens.
     private func rebuildHotZones(for corners: Set<QuickCaptureCorner>) {
         hotZoneCorners = corners
+        hotZonesBuilt = true
         hotZones = NSScreen.screens.flatMap { screen in
             corners.map { corner in
                 let point = cornerPoint(for: corner, in: screen.frame)
@@ -214,7 +296,7 @@ final class QuickCaptureManager {
         // Cheap rejection first — true for practically every mouse move in a
         // day's work, and it costs a handful of rectangle tests.
         let corners = settings.quickCaptureCorners
-        if hotZones.isEmpty || corners != hotZoneCorners { rebuildHotZones(for: corners) }
+        if !hotZonesBuilt || corners != hotZoneCorners { rebuildHotZones(for: corners) }
         if triggerCorner == nil, !hotZones.contains(where: { $0.contains(loc) }) {
             // Outside every keep radius, so a corner suppressed after opening a
             // note has now been properly left behind.
@@ -311,13 +393,14 @@ final class QuickCaptureManager {
         let target = corner ?? settings.quickCaptureCorners.first ?? .topRight
         let panel = QuickCapturePanel()
         panel.setContent(QuickCaptureView(
-            onSave: { [weak self] markdown, richData, isTaskList in
-                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList)
+            onSave: { [weak self] markdown, richData, isTaskList, staged in
+                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList, staged: staged)
             },
             onClose: { [weak self, weak panel] in self?.closePanel(panel) },
             obsidianConnected: settings.obsidianConnected,
-            onSaveToObsidian: { [weak self] markdown, richData, isTaskList in
-                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList, toObsidian: true)
+            onSaveToObsidian: { [weak self] markdown, richData, isTaskList, staged in
+                self?.saveNote(markdown, richData: richData, isTaskList: isTaskList,
+                               staged: staged, toObsidian: true)
             }
         ))
         positionPanel(panel, corner: target, index: panels.count)
@@ -333,11 +416,23 @@ final class QuickCaptureManager {
 
     /// Saves the quick note; with `toObsidian` it also mirrors it into the vault
     /// right away, without waiting for the debounced auto-export.
-    private func saveNote(_ markdown: String, richData: Data?, isTaskList: Bool, toObsidian: Bool = false) {
+    private func saveNote(_ markdown: String, richData: Data?, isTaskList: Bool,
+                          staged: [URL], toObsidian: Bool = false) {
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let note = model?.createNote(content: markdown, richData: richData, isTaskList: isTaskList)
-        if toObsidian, let note { model?.exportToObsidian(note) }
+        guard let model else { return }
+        let note = model.createNote(content: markdown, richData: richData, isTaskList: isTaskList)
+
+        // Files before the mirror: the markdown already points at
+        // `attachments/<name>`, so the copy sent to Obsidian must not go out
+        // while those names still lead nowhere. The live note is re-read on each
+        // pass because a filing rule may have moved it during creation.
+        for file in staged {
+            guard let live = model.notes.first(where: { $0.id == note.id }) else { break }
+            _ = model.addAttachment(fileURL: file, to: live)
+        }
+
+        if toObsidian { model.exportToObsidian(note) }
     }
 
     /// Positions the panel just inside the given corner. `index` staggers stacked
@@ -362,6 +457,68 @@ final class QuickCaptureManager {
             origin = CGPoint(x: frame.maxX - size.width - margin - stagger, y: frame.minY + margin + stagger)
         }
         panel.setFrameOrigin(origin)
+    }
+}
+
+/// Holds the files dropped or pasted into a quick note until the note exists.
+///
+/// A quick note has no folder on disk until it is saved, and the editor needs a
+/// folder to copy attachments into — that is why dropping a file into a quick
+/// note used to do nothing at all, and why a pasted screenshot never reached
+/// `note.md` or the Obsidian copy. Each panel gets its own folder in the
+/// temporary directory, shaped like a note's (`attachments/` inside), and the
+/// editor is told that this is the note folder. The markdown therefore already
+/// says `attachments/<name>`, and saving only has to move the files across.
+final class QuickCaptureStaging {
+    /// The stand-in note folder handed to the editor.
+    let folder: URL
+    /// Every file staged so far, in insertion order.
+    private(set) var files: [URL] = []
+
+    init() {
+        folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NoteM-szybka-notatka-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    /// Copies `fileURL` into the staging folder and returns the name the note
+    /// will know it by. Names are disambiguated here, the same way `NoteStore`
+    /// does it, so the file that lands in the note keeps the name the markdown
+    /// already points at.
+    func stage(_ fileURL: URL) -> String? {
+        let fileManager = FileManager.default
+        let attachments = folder.appendingPathComponent("attachments", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: attachments, withIntermediateDirectories: true)
+        } catch {
+            Log.failure(.quickCaptureStage, error)
+            return nil
+        }
+
+        var dest = attachments.appendingPathComponent(fileURL.lastPathComponent)
+        var counter = 1
+        while fileManager.fileExists(atPath: dest.path) {
+            let base = fileURL.deletingPathExtension().lastPathComponent
+            let ext = fileURL.pathExtension
+            dest = attachments.appendingPathComponent("\(base)-\(counter).\(ext)")
+            counter += 1
+        }
+        do {
+            try fileManager.copyItem(at: fileURL, to: dest)
+        } catch {
+            Log.failure(.quickCaptureStage, error)
+            return nil
+        }
+        files.append(dest)
+        return dest.lastPathComponent
+    }
+
+    /// Throws the staging folder away. Safe to call more than once, and called
+    /// on both exits — saved and discarded — so nothing is left in the
+    /// temporary directory.
+    func discard() {
+        guard !files.isEmpty || FileManager.default.fileExists(atPath: folder.path) else { return }
+        try? FileManager.default.removeItem(at: folder)
+        files = []
     }
 }
 
@@ -421,7 +578,9 @@ struct QuickCaptureTriggerView: View {
                 .animation(.easeOut(duration: 0.12), value: hovering)
         }
         .buttonStyle(.plain)
+        // `help` is a mouse tooltip; a screen reader needs a label of its own.
         .help(Loc.t("Szybka notatka", "Quick note"))
+        .accessibilityLabel(Loc.t("Szybka notatka", "Quick note"))
         .onHover { hovering = $0 }
     }
 }
@@ -459,20 +618,22 @@ final class QuickCapturePanel: NSPanel {
 /// main editor, so pasting keeps the source formatting 1:1 (colours, fonts,
 /// sizes, images) — identical to the main window.
 struct QuickCaptureView: View {
-    /// Called with the note's markdown, its full-fidelity rich archive, and
-    /// whether it should be saved as a task-list note.
-    let onSave: (String, Data?, Bool) -> Void
+    /// Called with the note's markdown, its full-fidelity rich archive, whether
+    /// it should be saved as a task-list note, and the files staged for it.
+    let onSave: (String, Data?, Bool, [URL]) -> Void
     let onClose: () -> Void
     /// Whether the Obsidian bridge is connected — hides the crystal when it isn't.
     var obsidianConnected: Bool = false
     /// Saves the note and immediately mirrors it into the Obsidian vault.
-    var onSaveToObsidian: ((String, Data?, Bool) -> Void)? = nil
+    var onSaveToObsidian: ((String, Data?, Bool, [URL]) -> Void)? = nil
 
     /// Its own controller per panel, so several open notes don't share state.
     @State private var controller = RichTextController()
+    /// Where dropped and pasted files wait until this note exists.
+    @State private var staging = QuickCaptureStaging()
     /// Black vs white note background — remembered across quick notes and launches,
     /// mirroring the toggle in the main editor.
-    @AppStorage("quickCaptureDarkBackground") private var darkBackground = false
+    @AppStorage(AppSettings.quickCaptureDarkKey) private var darkBackground = false
     /// When on, the saved note is flagged as a planned task list.
     @State private var isTaskList = false
     /// Confirmation before the quick note is saved and sent to the vault.
@@ -528,6 +689,8 @@ struct QuickCaptureView: View {
                         .controlSize(.small)
                         .help(Loc.t("Zapisz notatkę i wyślij do Obsidiana",
                                     "Save the note and send it to Obsidian"))
+                        .accessibilityLabel(Loc.t("Zapisz notatkę i wyślij do Obsidiana",
+                                                  "Save the note and send it to Obsidian"))
                     }
 
                     Button {
@@ -542,6 +705,8 @@ struct QuickCaptureView: View {
                     .controlSize(.small)
                     .help(isTaskList ? Loc.t("Notatka zostanie zapisana jako zadanie", "Note will be saved as a task")
                                      : Loc.t("Zapisz jako zadanie", "Save as task"))
+                    .accessibilityLabel(Loc.t("Zapisz jako zadanie", "Save as task"))
+                    .accessibilityValue(isTaskList ? Loc.t("włączone", "on") : Loc.t("wyłączone", "off"))
 
                     Button {
                         darkBackground.toggle()
@@ -554,6 +719,9 @@ struct QuickCaptureView: View {
                     .controlSize(.small)
                     .help(darkBackground ? Loc.t("Przełącz na białe tło", "Switch to white background")
                                          : Loc.t("Przełącz na czarne tło", "Switch to black background"))
+                    .accessibilityLabel(darkBackground
+                                        ? Loc.t("Przełącz na białe tło", "Switch to white background")
+                                        : Loc.t("Przełącz na czarne tło", "Switch to black background"))
 
                     Button(Loc.t("Zapisz", "Save")) { saveAndClose() }
                         .keyboardShortcut(.return, modifiers: [.command])
@@ -574,6 +742,7 @@ struct QuickCaptureView: View {
                     .contentShape(Rectangle())
                     .overlay(WindowDragHandle())
                     .help(Loc.t("Przeciągnij, aby przesunąć notatkę", "Drag to move the note"))
+                    .accessibilityLabel(Loc.t("Uchwyt przesuwania notatki", "Note drag handle"))
                     .padding(.bottom, 4)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -592,6 +761,12 @@ struct QuickCaptureView: View {
                 controller.setContent(
                     NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
                 )
+                // Attachments land in the staging folder and move into the note
+                // when it is created. Without these two the editor had nowhere
+                // to put a file: a dropped one vanished without a word, and a
+                // pasted image never reached note.md.
+                controller.onAddAttachment = { [staging] fileURL in staging.stage(fileURL) }
+                controller.noteFolderProvider = { [staging] in staging.folder }
                 // Quick capture has no autosave, so without this a quit would throw
                 // away everything typed here. The red "Close" button still discards
                 // on purpose — only quitting saves.
@@ -612,10 +787,11 @@ struct QuickCaptureView: View {
 
     /// Crystal button: saves the note and mirrors it into the vault, then closes.
     private func saveToObsidianAndClose() {
+        controller.persistUnnamedImageAttachments()
         if let attributed = controller.textView?.attributedString() {
             let markdown = MarkdownStyler.markdown(from: attributed)
             let richData = NoteRichArchive.data(from: attributed)
-            onSaveToObsidian?(markdown, richData, isTaskList)
+            onSaveToObsidian?(markdown, richData, isTaskList, staging.files)
         }
         close()
     }
@@ -633,6 +809,10 @@ struct QuickCaptureView: View {
     /// handler behind — which on quit would save the same note a second time.
     private func close() {
         PendingWork.shared.unregister(pendingID)
+        // Whatever was staged has either been copied into the note by now or is
+        // being thrown away with it; either way it has no business staying in
+        // the temporary directory.
+        staging.discard()
         onClose()
     }
 
@@ -642,10 +822,14 @@ struct QuickCaptureView: View {
     /// quick capture has no autosave at all, so until this existed, ⌘Q with an open
     /// panel threw away everything typed into it.
     private func saveIfTyped() {
+        // Images that arrived as raw bytes (a screenshot, an image dragged out of
+        // another app) get a real file first — otherwise markdown has no name to
+        // point at and note.md would carry an invisible placeholder instead.
+        controller.persistUnnamedImageAttachments()
         guard let attributed = controller.textView?.attributedString() else { return }
         let markdown = MarkdownStyler.markdown(from: attributed)
         let richData = NoteRichArchive.data(from: attributed)
-        onSave(markdown, richData, isTaskList)
+        onSave(markdown, richData, isTaskList, staging.files)
     }
 }
 
@@ -675,6 +859,8 @@ struct QuickCaptureSettingsView: View {
     let onChange: () -> Void
 
     @State private var trusted = Accessibility.isTrusted
+    /// Set when macOS would not give the app the ⌥⌘N shortcut.
+    @State private var hotKeyUnavailable = QuickCaptureManager.shared.hotKeyUnavailable
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -713,8 +899,11 @@ struct QuickCaptureSettingsView: View {
                                  : settings.t("Brak uprawnień Dostępności", "No Accessibility permission"))
                         .font(.callout)
                     if !trusted {
-                        Text(settings.t("Jeśli ikonka w rogu nie wysuwa się, dodaj NoteM w Ustawieniach systemowych.",
-                                        "If the corner icon doesn't slide out, add NoteM in System Settings."))
+                        // Since the shortcut stopped going through a keystroke
+                        // monitor, it works with no permission at all — only the
+                        // corner needs one, because it watches the mouse.
+                        Text(settings.t("Bez tej zgody róg ekranu nie działa. Skrót ⌥⌘N działa mimo to.",
+                                        "Without it the screen corner won't work. ⌥⌘N works anyway."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -725,11 +914,33 @@ struct QuickCaptureSettingsView: View {
                 }
             }
 
+            // A shortcut another app already holds would otherwise just quietly
+            // do nothing, which is indistinguishable from a broken program.
+            if hotKeyUnavailable {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(settings.t("Skrótu ⌥⌘N używa już inna aplikacja — szybką notatkę otworzysz rogiem ekranu.",
+                                    "⌥⌘N is already taken by another app — use the screen corner instead."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Spacer()
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear { trusted = Accessibility.isTrusted }
+        .onAppear { refreshStatus() }
+        // The user grants the permission in System Settings and comes back;
+        // activation is the only moment the app can notice.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in refreshStatus() }
+    }
+
+    private func refreshStatus() {
+        trusted = Accessibility.isTrusted
+        hotKeyUnavailable = QuickCaptureManager.shared.hotKeyUnavailable
     }
 
     /// A checkbox binding that adds/removes a corner from the active set.

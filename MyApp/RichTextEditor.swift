@@ -333,9 +333,7 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
         guard !pending.isEmpty else { return }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH.mm.ss"
-        let stamp = formatter.string(from: Date())
+        let stamp = Self.fileStampFormatter.string(from: Date())
         let tempFolder = FileManager.default.temporaryDirectory
 
         storage.beginEditing()
@@ -350,6 +348,18 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         }
         storage.endEditing()
     }
+
+    /// Timestamp used in generated image filenames.
+    ///
+    /// `en_US_POSIX` on purpose: without it `yyyy` follows whatever calendar the
+    /// Mac is set to, so on a Japanese or Buddhist calendar the files would be
+    /// stamped with a different year and stop sorting chronologically.
+    static let fileStampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH.mm.ss"
+        return formatter
+    }()
 
     /// PNG bytes for an image, used when an attachment carries no original file.
     private static func pngData(from image: NSImage) -> Data? {
@@ -1056,7 +1066,6 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func toggleList(_ kind: String) {
         guard let textView, let storage = textView.textStorage else { return }
         let paragraphRange = selectedParagraphContentRange(in: storage)
-        guard textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
 
         let paragraph = storage.attributedSubstring(from: paragraphRange)
         let lineStrings = paragraph.string.components(separatedBy: "\n")
@@ -1082,6 +1091,10 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             location += length + 1
         }
 
+        // The replacement string, not `nil`: this changes characters, not just
+        // attributes, and `nil` would put an attributes-only entry on the undo
+        // stack — ⌘Z would then leave the markers in the text. Measured.
+        guard textView.shouldChangeText(in: paragraphRange, replacementString: rebuilt.string) else { return }
         storage.replaceCharacters(in: paragraphRange, with: rebuilt)
         textView.didChangeText()
         notifyActiveFormats()
@@ -1094,7 +1107,6 @@ final class RichTextController: NSObject, NSTextViewDelegate {
     func toggleChecklist() {
         guard let textView, let storage = textView.textStorage else { return }
         let paragraphRange = selectedParagraphContentRange(in: storage)
-        guard textView.shouldChangeText(in: paragraphRange, replacementString: nil) else { return }
 
         let paragraph = storage.attributedSubstring(from: paragraphRange)
         let lineStrings = paragraph.string.components(separatedBy: "\n")
@@ -1118,6 +1130,8 @@ final class RichTextController: NSObject, NSTextViewDelegate {
             location += length + 1
         }
 
+        // See `toggleList`: the checkbox is a character, so undo needs to know.
+        guard textView.shouldChangeText(in: paragraphRange, replacementString: rebuilt.string) else { return }
         storage.replaceCharacters(in: paragraphRange, with: rebuilt)
         textView.didChangeText()
         notifyActiveFormats()
@@ -1127,12 +1141,22 @@ final class RichTextController: NSObject, NSTextViewDelegate {
 
     func insertTable() { insertTable(rows: 3, columns: 3) }
 
+    /// Largest table the editor will build, per side.
+    ///
+    /// Every cell is its own `NSTextTableBlock` and its own paragraph, and the
+    /// layout cost grows faster than the cell count: measured on this Mac,
+    /// 30×30 takes 20 ms, 100×100 takes 470 ms and 200×200 freezes the window
+    /// for 3,3 s. 50×50 (2500 cells) stays under a tenth of a second, which is
+    /// well past any table a note actually wants. The clamp lives here rather
+    /// than only in the picker, so it holds whoever calls this next.
+    static let maxTableSide = 50
+
     /// Inserts a real, bordered `NSTextTable` with the given number of rows
     /// (including the header row) and columns — aligned cells you can type into.
     func insertTable(rows: Int, columns: Int) {
         guard let textView, let storage = textView.textStorage else { return }
-        let cols = max(1, columns)
-        let rws = max(1, rows)
+        let cols = min(max(1, columns), Self.maxTableSide)
+        let rws = min(max(1, rows), Self.maxTableSide)
 
         let table = NSTextTable()
         table.numberOfColumns = cols
@@ -1182,8 +1206,12 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         guard textView.shouldChangeText(in: range, replacementString: wrapped) else { return }
         storage.replaceCharacters(in: range, with: str)
         textView.didChangeText()
-        // Place cursor inside the backticks when no selection
-        let cursorPos = range.length == 0 ? range.location + 1 : range.location + wrapped.count
+        // Place cursor inside the backticks when no selection.
+        // `NSString.length` (UTF-16), not `String.count` (characters): the caret
+        // is an NSRange index, and an emoji in the selection makes the two differ.
+        let cursorPos = range.length == 0
+            ? range.location + 1
+            : range.location + (wrapped as NSString).length
         textView.setSelectedRange(NSRange(location: cursorPos, length: 0))
     }
 
@@ -1413,6 +1441,16 @@ final class NoteTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        // An image selected by click is remembered as an absolute character
+        // index, and clicking it does not move the caret — so text typed before
+        // it would leave the selection border, the handles and Backspace aimed
+        // at whatever now sits at that index. Editing drops the selection.
+        // (Resizing and moving an image don't come through here: they report the
+        // change via `controller.onChange` and keep the image selected.)
+        if selectedImageRange != nil {
+            selectedImageRange = nil
+            needsDisplay = true
+        }
         maybeShowWikiCompletion()
     }
 
@@ -2032,15 +2070,33 @@ final class NoteTextView: NSTextView {
         return true
     }
 
-    private func toggleChecklistBox(at location: Int, currentlyChecked: Bool) {
-        guard let storage = textStorage else { return }
-        let boxRange = NSRange(location: location, length: 1)
-        guard shouldChangeText(in: boxRange, replacementString: nil) else { return }
+    /// Ticks / unticks the box at `location`. Internal rather than private so a
+    /// test can drive it without synthesizing a click on the glyph.
+    ///
+    /// The whole paragraph is handed to `shouldChangeText`, not just the box
+    /// character, and that is the point: whether a task is done lives in the
+    /// `.checklist` attribute spread across the paragraph, so an undo covering
+    /// only the glyph put the empty box back under a paragraph still marked
+    /// done — the box looked unticked and the note still said `- [x]`. Measured;
+    /// `undoUnticksATask` fails if this narrows again.
+    func toggleChecklistBox(at location: Int, currentlyChecked: Bool) {
+        guard let storage = textStorage, location < storage.length else { return }
+        let paragraphRange = (storage.string as NSString)
+            .paragraphRange(for: NSRange(location: location, length: 0))
+        guard paragraphRange.length > 0 else { return }
         let newChecked = !currentlyChecked
-        storage.replaceCharacters(in: boxRange, with: MarkdownStyler.checkboxAttachmentString(checked: newChecked))
-        let paragraphRange = (storage.string as NSString).paragraphRange(for: NSRange(location: location, length: 0))
-        storage.addAttribute(.checklist, value: newChecked, range: paragraphRange)
-        storage.addAttribute(.paragraphStyle, value: MarkdownStyler.listParagraphStyle, range: paragraphRange)
+
+        let updated = NSMutableAttributedString(
+            attributedString: storage.attributedSubstring(from: paragraphRange)
+        )
+        updated.replaceCharacters(in: NSRange(location: 0, length: 1),
+                                  with: MarkdownStyler.checkboxAttachmentString(checked: newChecked))
+        let full = NSRange(location: 0, length: updated.length)
+        updated.addAttribute(.checklist, value: newChecked, range: full)
+        updated.addAttribute(.paragraphStyle, value: MarkdownStyler.listParagraphStyle, range: full)
+
+        guard shouldChangeText(in: paragraphRange, replacementString: updated.string) else { return }
+        storage.replaceCharacters(in: paragraphRange, with: updated)
         didChangeText()
     }
 
@@ -2121,8 +2177,16 @@ final class NoteTextView: NSTextView {
     /// Custom paste: prefer NoteM's own rich-text type (lossless), then RTF/HTML
     /// (sanitized), then plain text.
     override func paste(_ sender: Any?) {
-        let pasteboard = NSPasteboard.general
+        if paste(from: .general) { return }
+        super.paste(sender)
+    }
 
+    /// The paste ladder itself, with the pasteboard passed in so a test can drive
+    /// it on its own pasteboard instead of the user's clipboard. Returns `false`
+    /// when nothing on the board matched, which is the caller's cue to fall back
+    /// to AppKit's own paste.
+    @discardableResult
+    func paste(from pasteboard: NSPasteboard) -> Bool {
         // NoteM-to-NoteM: our private type preserves all custom attributes without
         // RTF loss. Decoded with secure coding and an explicit class list — the
         // clipboard is shared with every process running as this user, so any app
@@ -2132,7 +2196,7 @@ final class NoteTextView: NSTextView {
            let attributed = NoteRichArchive.secureAttributedString(from: data) {
             insertAttributed(attributed)
             if let storage = textStorage { RichTextController.normalizeImageAttachments(in: storage) }
-            return
+            return true
         }
 
         // Keep the source formatting 1:1 (colours, fonts, sizes, images). RTFD
@@ -2140,13 +2204,13 @@ final class NoteTextView: NSTextView {
         if let data = pasteboard.data(forType: .rtfd),
            let attributed = NSAttributedString(rtfd: data, documentAttributes: nil) {
             insertExternal(attributed)
-            return
+            return true
         }
 
         if let data = pasteboard.data(forType: .rtf),
            let attributed = NSAttributedString(rtf: data, documentAttributes: nil) {
             insertExternal(attributed)
-            return
+            return true
         }
 
         // Through the guard, never straight into the importer: the system HTML
@@ -2155,21 +2219,18 @@ final class NoteTextView: NSTextView {
         if let data = pasteboard.data(forType: .html),
            let attributed = HTMLPasteGuard.attributedString(fromPastedHTML: data) {
             insertExternal(attributed)
-            return
+            return true
         }
 
         if let string = pasteboard.string(forType: .string) {
             insertAttributed(NSAttributedString(string: string, attributes: MarkdownStyler.defaultTypingAttributes))
-            return
+            return true
         }
 
         // Raw bitmap (e.g. a screenshot copied with ⌘⇧⌃4): save it as a real
         // attachments/ file so it shows up in "Attachments". Falls through to
-        // the default embedded paste when there's no note to attach to (quick
-        // capture).
-        if insertPastedImage(from: pasteboard) { return }
-
-        super.paste(sender)
+        // the default embedded paste when there is nowhere to put the file.
+        return insertPastedImage(from: pasteboard)
     }
 
     /// "Wklej i dopasuj styl" (⌥⇧⌘V, also in the right-click menu) — the action
@@ -2183,7 +2244,15 @@ final class NoteTextView: NSTextView {
     /// margins — does not. With nothing rich on the clipboard it falls back to
     /// AppKit's plain-text paste.
     override func pasteAsPlainText(_ sender: Any?) {
-        let pasteboard = NSPasteboard.general
+        if pasteAsPlainText(from: .general) { return }
+        super.pasteAsPlainText(sender)
+    }
+
+    /// The sanitizing paste, with the pasteboard passed in for tests. Returns
+    /// `false` when the board holds nothing rich, which is AppKit's cue to do its
+    /// own plain-text paste.
+    @discardableResult
+    func pasteAsPlainText(from pasteboard: NSPasteboard) -> Bool {
         var source: NSAttributedString?
         if let data = pasteboard.data(forType: .rtfd) {
             source = NSAttributedString(rtfd: data, documentAttributes: nil)
@@ -2195,11 +2264,9 @@ final class NoteTextView: NSTextView {
             // request has already gone out.
             source = HTMLPasteGuard.attributedString(fromPastedHTML: data)
         }
-        guard let source else {
-            super.pasteAsPlainText(sender)
-            return
-        }
+        guard let source else { return false }
         insertAttributed(PasteSanitizer.sanitized(source))
+        return true
     }
 
     /// Saves a pasted raw image as a file in the note's `attachments/` folder
@@ -2213,9 +2280,7 @@ final class NoteTextView: NSTextView {
             }
         guard let png else { return false }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH.mm.ss"
-        let name = "obraz-\(formatter.string(from: Date())).png"
+        let name = "obraz-\(RichTextController.fileStampFormatter.string(from: Date())).png"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         guard (try? png.write(to: tempURL)) != nil else { return false }
         insertAttachments(from: [tempURL])

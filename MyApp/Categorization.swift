@@ -189,6 +189,10 @@ final class AppSettings {
     private static let smartFoldersKey = "smartFolders"
     static let spellCheckKey = "spellCheckEnabled"
     static let autocorrectKey = "autocorrectEnabled"
+    /// Black vs white background of the quick-capture note. Read straight from
+    /// `UserDefaults` by the panel, so it lives here with the other keys rather
+    /// than as a bare string in the view.
+    static let quickCaptureDarkKey = "quickCaptureDarkBackground"
 
     /// All smart folders: predefined first, then user-created.
     var allSmartFolders: [SmartFolder] {

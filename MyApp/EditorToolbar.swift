@@ -412,6 +412,11 @@ private struct TableGridPicker: View {
     private let maxCols = 8
     private let cell: CGFloat = 16
 
+    /// Keeps a hand-typed size inside what the editor will actually build.
+    private func clamped(_ value: Int) -> Int {
+        min(max(1, value), RichTextController.maxTableSide)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(rows > 0 ? "\(cols)×\(rows) — \(Loc.t("tabela", "table"))"
@@ -444,8 +449,13 @@ private struct TableGridPicker: View {
                         .frame(width: 40).textFieldStyle(.roundedBorder)
                 }
                 Button(Loc.t("Wstaw tabelę…", "Insert table…")) {
-                    onPick(max(1, manualRows), max(1, manualCols))
+                    onPick(clamped(manualRows), clamped(manualCols))
                 }
+                // Say the limit out loud: the field takes any number, and a
+                // stray zero used to mean a window frozen for seconds.
+                Text(Loc.t("Najwyżej \(RichTextController.maxTableSide) × \(RichTextController.maxTableSide)",
+                           "At most \(RichTextController.maxTableSide) × \(RichTextController.maxTableSide)"))
+                    .foregroundStyle(.secondary)
             }
             .font(.caption)
         }

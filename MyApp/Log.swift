@@ -45,6 +45,11 @@ enum Log {
 
         // The drawing editor handing its picture over to the note.
         case drawingWrite           = "drawing-write"
+
+        // Quick capture — a file waiting for the note that does not exist yet,
+        // and the system-wide shortcut the app was not allowed to claim.
+        case quickCaptureStage      = "quick-capture-stage"
+        case quickCaptureHotKey     = "quick-capture-hotkey"
     }
 
     /// Records `event` as a failure, with the error's domain and code when there
