@@ -42,6 +42,9 @@ enum Log {
 
         // Obsidian mirror.
         case obsidianExport         = "obsidian-export"
+
+        // The drawing editor handing its picture over to the note.
+        case drawingWrite           = "drawing-write"
     }
 
     /// Records `event` as a failure, with the error's domain and code when there

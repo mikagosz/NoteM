@@ -233,7 +233,20 @@ final class NoteDrawingView: NSView {
     private var undoStack: [Snapshot] = []
     private var redoStack: [Snapshot] = []
 
-    private let handleSize: CGFloat = 11
+    /// State captured when a drag started, kept aside until the drag turns out to
+    /// have changed something. A click that changes nothing used to leave an undo
+    /// entry that undid nothing, so "Undo" had to be pressed twice.
+    private var pendingUndo: Snapshot?
+    private var dragChangedSomething = false
+
+    /// How many steps of drawing history to keep.
+    ///
+    /// Every entry is a full copy of the drawing, so an uncapped stack grows with
+    /// the square of the session length: after n strokes it holds 1+2+…+n of them.
+    /// The same reasoning (and roughly the same number) as `NoteStore.historyLimit`.
+    private static let undoLimit = 50
+
+    static let handleSize: CGFloat = 11
 
     private enum DragMode { case none, draw, erase, move, resize(Int) }
 
@@ -243,6 +256,26 @@ final class NoteDrawingView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: (selectedID != nil) ? .arrow : .crosshair)
+    }
+
+    // MARK: Accessibility
+
+    // A custom NSView is invisible to VoiceOver unless it says otherwise. It stays
+    // one element rather than a tree of shapes — freehand drawing is not something
+    // a screen reader can meaningfully navigate — but at least it announces what it
+    // is and how much is on it.
+
+    override func isAccessibilityElement() -> Bool { true }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .image }
+
+    override func accessibilityLabel() -> String? {
+        Loc.t("Obszar rysowania", "Drawing canvas")
+    }
+
+    override func accessibilityValue() -> Any? {
+        Loc.t("Pociągnięcia: \(drawing.strokes.count), figury: \(shapes.count), teksty: \(texts.count)",
+              "Strokes: \(drawing.strokes.count), shapes: \(shapes.count), texts: \(texts.count)")
     }
 
     // MARK: Input
@@ -256,13 +289,15 @@ final class NoteDrawingView: NSView {
             selectedID = t.id; notifySelection(); onEditText?(); needsDisplay = true; return
         }
 
+        // Held aside rather than pushed: the drag may turn out to change nothing.
+        holdUndo()
+
         // 1. A handle of the selected object → resize.
-        if let id = selectedID, let f = objectFrame(id), let h = handleIndex(at: p, frame: f) {
-            pushUndo(); dragMode = .resize(h); lastPoint = p; return
+        if let id = selectedID, let f = objectFrame(id), let h = Self.handleIndex(at: p, frame: f) {
+            dragMode = .resize(h); lastPoint = p; return
         }
         // 2. Click on a text or shape (texts sit on top) → select + move.
         if let id = topObject(at: p) {
-            pushUndo()
             selectedID = id
             dragMode = .move; lastPoint = p
             notifySelection(); needsDisplay = true
@@ -271,16 +306,22 @@ final class NoteDrawingView: NSView {
         }
         // 3. Empty space → deselect; then erase or draw.
         if selectedID != nil { selectedID = nil; notifySelection(); needsDisplay = true }
-        if isEraser { pushUndo(); dragMode = .erase; erase(at: p); needsDisplay = true; return }
-        pushUndo(); dragMode = .draw; livePoints = [p]; needsDisplay = true
+        if isEraser { dragMode = .erase; erase(at: p); needsDisplay = true; return }
+        dragMode = .draw; livePoints = [p]; needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         switch dragMode {
-        case .resize(let h): resizeSelected(handle: h, to: p); notifySelection()
+        case .resize(let h):
+            resizeSelected(handle: h, to: p); notifySelection()
+            dragChangedSomething = true
         case .move:
-            moveSelected(by: CGPoint(x: p.x - lastPoint.x, y: p.y - lastPoint.y))
+            let delta = CGPoint(x: p.x - lastPoint.x, y: p.y - lastPoint.y)
+            if delta.x != 0 || delta.y != 0 {
+                moveSelected(by: delta)
+                dragChangedSomething = true
+            }
             lastPoint = p; notifySelection()
         case .erase: erase(at: p)
         case .draw:  livePoints.append(p)
@@ -292,7 +333,11 @@ final class NoteDrawingView: NSView {
     override func mouseUp(with event: NSEvent) {
         if case .draw = dragMode, livePoints.count > 1 {
             drawing = PKDrawing(strokes: drawing.strokes + [stroke(from: livePoints)])
+            dragChangedSomething = true
         }
+        // Only now does the held snapshot become an undo step — or get dropped,
+        // if the whole gesture was a click that changed nothing.
+        commitOrDropHeldUndo()
         livePoints = []; dragMode = .none; needsDisplay = true
     }
 
@@ -308,9 +353,9 @@ final class NoteDrawingView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         // Shapes first, so pen strokes can be drawn on top of them.
-        for shape in shapes { drawShape(shape) }
+        for shape in shapes { Self.drawShape(shape) }
         // Text objects (the one being edited is shown via a SwiftUI overlay, so skip it).
-        for text in texts where text.id != editingTextID { drawText(text) }
+        for text in texts where text.id != editingTextID { Self.drawText(text) }
 
         // PencilKit strokes (committed + live), with the real ink effect.
         var strokes = drawing.strokes
@@ -325,11 +370,13 @@ final class NoteDrawingView: NSView {
         if let id = selectedID, let f = objectFrame(id) { drawSelection(f) }
     }
 
-    private func drawText(_ text: EditableText) {
+    /// `static`, bo nie dotyka stanu widoku — dzięki temu blok rysujący obraz
+    /// (patrz `flattenedImage`) może z niego korzystać bez sięgania po `self`.
+    static func drawText(_ text: EditableText) {
         text.attributedString().draw(in: text.frame)
     }
 
-    private func drawShape(_ shape: EditableShape) {
+    static func drawShape(_ shape: EditableShape) {
         let path = shape.path()
         path.lineWidth = shape.lineWidth
         path.lineJoinStyle = .round
@@ -342,9 +389,9 @@ final class NoteDrawingView: NSView {
         box.lineWidth = 1
         NSColor.controlAccentColor.setStroke()
         box.stroke()
-        for point in handlePoints(frame) {
-            let r = NSRect(x: point.x - handleSize / 2, y: point.y - handleSize / 2,
-                           width: handleSize, height: handleSize)
+        for point in Self.handlePoints(frame) {
+            let r = NSRect(x: point.x - Self.handleSize / 2, y: point.y - Self.handleSize / 2,
+                           width: Self.handleSize, height: Self.handleSize)
             let dot = NSBezierPath(ovalIn: r)
             NSColor.white.setFill(); dot.fill()
             NSColor.controlAccentColor.setStroke(); dot.lineWidth = 1.5; dot.stroke()
@@ -378,7 +425,10 @@ final class NoteDrawingView: NSView {
             }
             return true
         }
-        if kept.count != drawing.strokes.count { drawing = PKDrawing(strokes: kept) }
+        if kept.count != drawing.strokes.count {
+            drawing = PKDrawing(strokes: kept)
+            dragChangedSomething = true
+        }
     }
 
     private func erasePrecise(at point: CGPoint) {
@@ -408,24 +458,41 @@ final class NoteDrawingView: NSView {
                 }
             }
         }
-        if changed { drawing = PKDrawing(strokes: result) }
+        if changed {
+            drawing = PKDrawing(strokes: result)
+            dragChangedSomething = true
+        }
     }
 
     // MARK: Shape geometry / editing
 
-    private func handlePoints(_ f: CGRect) -> [CGPoint] {
+    static func handlePoints(_ f: CGRect) -> [CGPoint] {
         [CGPoint(x: f.minX, y: f.minY), CGPoint(x: f.midX, y: f.minY), CGPoint(x: f.maxX, y: f.minY),
          CGPoint(x: f.maxX, y: f.midY),
          CGPoint(x: f.maxX, y: f.maxY), CGPoint(x: f.midX, y: f.maxY), CGPoint(x: f.minX, y: f.maxY),
          CGPoint(x: f.minX, y: f.midY)]
     }
 
-    private func handleIndex(at point: CGPoint, frame: CGRect) -> Int? {
+    /// How far from a handle a click still counts as grabbing it.
+    ///
+    /// Shrinks with the object: at the fixed 11 points, a shape at the 12×12
+    /// minimum was covered by its own handle hit boxes end to end, so every click
+    /// landed on a handle and the shape could only ever be resized, never moved.
+    /// A sixth of the shorter side leaves the middle free to grab.
+    static func handleHitRadius(for frame: CGRect) -> CGFloat {
+        min(handleSize, min(frame.width, frame.height) / 6)
+    }
+
+    /// Index of the handle at `point`, or `nil` when the click belongs to the body
+    /// of the object. Pure, so the rule above can be tested without a window.
+    static func handleIndex(at point: CGPoint, frame: CGRect) -> Int? {
+        let radius = handleHitRadius(for: frame)
         for (i, h) in handlePoints(frame).enumerated() {
-            if abs(point.x - h.x) <= handleSize && abs(point.y - h.y) <= handleSize { return i }
+            if abs(point.x - h.x) <= radius && abs(point.y - h.y) <= radius { return i }
         }
         return nil
     }
+
 
     /// The frame of any selectable object (shape or text) by id.
     private func objectFrame(_ id: UUID) -> CGRect? {
@@ -444,9 +511,13 @@ final class NoteDrawingView: NSView {
         return nil
     }
 
-    private func resizeSelected(handle: Int, to p: CGPoint) {
-        guard let id = selectedID, var f = objectFrame(id) else { return }
-        var minX = f.minX, minY = f.minY, maxX = f.maxX, maxY = f.maxY
+    /// Smallest an object may be dragged down to.
+    static let minimumObjectSide: CGFloat = 12
+
+    /// The frame `frame` becomes when handle `handle` is dragged to `p`. Pure, so
+    /// the corner/edge arithmetic can be tested without a window.
+    static func resizedFrame(_ frame: CGRect, handle: Int, to p: CGPoint) -> CGRect {
+        var minX = frame.minX, minY = frame.minY, maxX = frame.maxX, maxY = frame.maxY
         switch handle {
         case 0: minX = p.x; minY = p.y
         case 1: minY = p.y
@@ -456,11 +527,16 @@ final class NoteDrawingView: NSView {
         case 5: maxY = p.y
         case 6: minX = p.x; maxY = p.y
         case 7: minX = p.x
-        default: break
+        default: return frame
         }
-        f = CGRect(x: min(minX, maxX), y: min(minY, maxY),
-                   width: max(12, abs(maxX - minX)), height: max(12, abs(maxY - minY)))
-        setObjectFrame(id, f)
+        return CGRect(x: min(minX, maxX), y: min(minY, maxY),
+                      width: max(minimumObjectSide, abs(maxX - minX)),
+                      height: max(minimumObjectSide, abs(maxY - minY)))
+    }
+
+    private func resizeSelected(handle: Int, to p: CGPoint) {
+        guard let id = selectedID, let f = objectFrame(id) else { return }
+        setObjectFrame(id, Self.resizedFrame(f, handle: handle, to: p))
     }
 
     private func moveSelected(by d: CGPoint) {
@@ -544,7 +620,34 @@ final class NoteDrawingView: NSView {
 
     // MARK: Undo / redo
 
-    private func pushUndo() { undoStack.append((drawing, shapes, texts)); redoStack.removeAll() }
+    private func pushUndo() {
+        undoStack.append((drawing, shapes, texts))
+        // Oldest first: a session long enough to hit the cap has already made the
+        // first few steps irrelevant, and every entry carries a whole drawing.
+        if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+        redoStack.removeAll()
+    }
+
+    /// Remembers the current state for the duration of a drag, without spending an
+    /// undo step on it yet.
+    private func holdUndo() {
+        pendingUndo = (drawing, shapes, texts)
+        dragChangedSomething = false
+    }
+
+    /// Turns the held state into an undo step — but only if the drag actually
+    /// changed something. A click on empty space is not a step.
+    private func commitOrDropHeldUndo() {
+        defer { pendingUndo = nil; dragChangedSomething = false }
+        guard dragChangedSomething, let held = pendingUndo else { return }
+        undoStack.append(held)
+        if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+        redoStack.removeAll()
+    }
+
+    /// Steps currently on the undo stack — for the tests, which have no other way
+    /// to see that a click changed nothing.
+    var undoStepCount: Int { undoStack.count }
 
     func undoDraw() {
         guard let last = undoStack.popLast() else { return }
@@ -562,18 +665,48 @@ final class NoteDrawingView: NSView {
 
     // MARK: Flatten to image
 
+    /// The rectangle the exported image has to cover.
+    ///
+    /// A shape's `frame` is not what ends up on screen: the border is stroked
+    /// *centred* on the path, so half of a 30-point outline lives outside the
+    /// frame. Text is worse — the box is fixed at 240×56 when created, while the
+    /// size is typed in freely, so a large font overflows its frame by a lot.
+    /// Measuring both is the difference between the saved PNG matching the screen
+    /// and quietly cropping what the user drew.
+    static func contentRect(shapes: [EditableShape], texts: [EditableText],
+                            drawingBounds: CGRect) -> CGRect {
+        var content = drawingBounds.isEmpty ? .null : drawingBounds
+        for shape in shapes {
+            let outline = (shape.stroke == nil) ? 0 : shape.lineWidth / 2
+            content = content.union(shape.frame.insetBy(dx: -outline, dy: -outline))
+        }
+        for text in texts {
+            let drawn = text.attributedString().size()
+            content = content.union(CGRect(x: text.frame.minX, y: text.frame.minY,
+                                           width: max(text.frame.width, drawn.width),
+                                           height: max(text.frame.height, drawn.height)))
+        }
+        return content.isNull ? .zero : content.insetBy(dx: -8, dy: -8)
+    }
+
     /// Renders shapes + strokes into a single image covering all content.
+    ///
+    /// Everything the drawing block needs is copied out first. AppKit's own header
+    /// says the block "may be invoked whenever and on whatever thread the image
+    /// itself is drawn on", and reading the view's state from there would be a
+    /// race — one the Swift 6 checker cannot see, because the block is imported
+    /// without `@Sendable`.
     func flattenedImage() -> NSImage? {
-        var content = drawing.bounds
-        for shape in shapes { content = content.isEmpty ? shape.frame : content.union(shape.frame) }
-        for text in texts { content = content.isEmpty ? text.frame : content.union(text.frame) }
-        content = content.insetBy(dx: -8, dy: -8)
+        let shapes = self.shapes
+        let texts = self.texts
+        let drawing = self.drawing
+        let content = Self.contentRect(shapes: shapes, texts: texts, drawingBounds: drawing.bounds)
         guard content.width > 1, content.height > 1 else { return nil }
 
-        return NSImage(size: content.size, flipped: true) { [self] _ in
+        return NSImage(size: content.size, flipped: true) { _ in
             NSGraphicsContext.current?.cgContext.translateBy(x: -content.minX, y: -content.minY)
-            for shape in shapes { drawShape(shape) }
-            for text in texts { drawText(text) }
+            for shape in shapes { Self.drawShape(shape) }
+            for text in texts { Self.drawText(text) }
             if !drawing.bounds.isEmpty {
                 drawing.image(from: content, scale: 2).draw(in: content)
             }
@@ -723,6 +856,10 @@ struct DrawingEditorView: View {
     @State private var showFontMenu = false
     @FocusState private var textFocused: Bool
 
+    /// Set when handing the drawing over failed. Shown as a bar over the canvas;
+    /// the editor deliberately stays open, because the drawing lives nowhere else.
+    @State private var saveError: String?
+
     private let widths: [CGFloat] = [2, 4, 8, 14, 22]
 
     var body: some View {
@@ -763,6 +900,18 @@ struct DrawingEditorView: View {
 
             VStack(spacing: 0) {
                 topBar
+                if let saveError {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Text(saveError).font(.caption).fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button(Loc.t("Ukryj", "Dismiss")) { self.saveError = nil }.font(.caption)
+                    }
+                    .padding(10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary, lineWidth: 0.5))
+                    .padding(.top, 8)
+                }
                 Spacer()
                 bottomBar
             }
@@ -793,11 +942,16 @@ struct DrawingEditorView: View {
     private var topBar: some View {
         HStack {
             Button(Loc.t("Anuluj", "Cancel")) { onFinish(nil) }
+                .keyboardShortcut(.cancelAction)
             Spacer()
             Button { canvas.undoDraw() } label: { Image(systemName: "arrow.uturn.backward") }
                 .help(Loc.t("Cofnij", "Undo"))
+                .accessibilityLabel(Loc.t("Cofnij", "Undo"))
+                .keyboardShortcut("z", modifiers: .command)
             Button { canvas.redoDraw() } label: { Image(systemName: "arrow.uturn.forward") }
                 .help(Loc.t("Ponów", "Redo"))
+                .accessibilityLabel(Loc.t("Ponów", "Redo"))
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             Spacer()
             Button(Loc.t("Gotowe", "Done")) { finish() }
                 .keyboardShortcut(.defaultAction)
@@ -839,7 +993,10 @@ struct DrawingEditorView: View {
             .popover(isPresented: $showShapes, arrowEdge: .top) { shapesPopover }
 
             toolButton("character.textbox", help: Loc.t("Pole tekstowe", "Text box")) { canvas.addText() }
+            // Wyłączony, nie pusty: przycisk, który się klika i nic nie robi,
+            // wygląda jak zepsuty, a nie jak niedostępny.
             toolButton("signature", help: Loc.t("Podpis (wkrótce)", "Signature (soon)")) {}
+                .disabled(true)
         }
         .padding(.horizontal, 10)
         .frame(height: 42)
@@ -1053,27 +1210,60 @@ struct DrawingEditorView: View {
         Divider().frame(height: 20).padding(.horizontal, 4)
     }
 
+    /// `help` to dymek myszy — dla czytnika ekranu przycisk z samą ikoną jest bez
+    /// nazwy, więc ten sam tekst idzie jako etykieta dostępności.
     private func toolButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).frame(width: 30, height: 30).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).help(help)
+        .buttonStyle(.plain).help(help).accessibilityLabel(help)
     }
 
     // MARK: Done
 
-    private func finish() {
-        guard let image = canvas.flattenedImage() else { onFinish(nil); return }
-        onFinish(writePNG(image))
+    /// Why a drawing could not be handed over. Both cases end the same way for the
+    /// user — the picture is still on screen and nothing was closed.
+    enum SaveFailure: Error {
+        case couldNotEncode
+        case couldNotWrite(Error)
     }
 
-    private func writePNG(_ image: NSImage) -> URL? {
+    private func finish() {
+        // No content is not a failure: an empty canvas closes silently, the same
+        // way Cancel does.
+        guard let image = canvas.flattenedImage() else { onFinish(nil); return }
+        do {
+            onFinish(try Self.writePNG(image))
+        } catch {
+            // The drawing has no autosave, no copy and no history — closing here
+            // would destroy work that exists nowhere else. So: say what happened
+            // and leave everything on screen to try again.
+            Log.failure(.drawingWrite, error)
+            saveError = Loc.t(
+                "Nie udało się zapisać rysunku. Nic nie przepadło — spróbuj jeszcze raz "
+                + "albo zwolnij miejsce na dysku.",
+                "Could not save the drawing. Nothing is lost — try again, or free up some disk space.")
+        }
+    }
+
+    /// Writes the flattened drawing to a file the caller can insert.
+    ///
+    /// Atomic, and it throws rather than swallowing: the previous version used
+    /// `try?` and returned the URL regardless, so a failed write handed back a path
+    /// to a file that was never created.
+    static func writePNG(_ image: NSImage) throws -> URL {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+              let png = rep.representation(using: .png, properties: [:]) else {
+            throw SaveFailure.couldNotEncode
+        }
         let name = "Rysunek-\(UUID().uuidString.prefix(6)).png"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        try? png.write(to: url)
+        do {
+            try png.write(to: url, options: .atomic)
+        } catch {
+            throw SaveFailure.couldNotWrite(error)
+        }
         return url
     }
 }

@@ -169,12 +169,18 @@ struct NoteDetailView: View {
         .navigationTitle(note.title)
         .toolbar {
             // Left cluster: undo, redo, search, task-list toggle, pin, export PDF, print.
+            //
+            // All of them are disabled while the drawing overlay is up. They act on
+            // the note underneath, which is then hidden — and "Undo" was the worst
+            // of it: the drawing has its own undo button in the overlay, so the same
+            // icon in the toolbar quietly undid an edit in the invisible text.
             ToolbarItem(placement: .automatic) {
                 Button { controller.undo() } label: {
                     Label(settings.t("Cofnij", "Undo"), systemImage: "arrow.uturn.backward")
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Cofnij ostatnią zmianę (⌘Z)", "Undo last change (⌘Z)"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button { controller.redo() } label: {
@@ -182,6 +188,7 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Ponów cofniętą zmianę (⇧⌘Z)", "Redo change (⇧⌘Z)"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button { controller.showFindBar() } label: {
@@ -189,6 +196,7 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Szukaj w notatce (⌘F)", "Find in note (⌘F)"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.toggleTaskList(note) } label: {
@@ -202,6 +210,7 @@ struct NoteDetailView: View {
                                    "This note is a task list — click to unmark it")
                       : settings.t("Oznacz notatkę jako listę zadań (pojawi się w „Zadania”)",
                                    "Mark the note as a task list (appears in “Tasks”)"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button { model.togglePin(note) } label: {
@@ -211,6 +220,7 @@ struct NoteDetailView: View {
                 }
                 .help(note.pinned ? settings.t("Odepnij notatkę", "Unpin note")
                                   : settings.t("Przypnij notatkę na górze", "Pin note to top"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button(action: exportToPDF) {
@@ -218,6 +228,7 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Eksportuj notatkę jako PDF", "Export note as PDF"))
+                .disabled(showDrawing)
             }
             // Eksport HTML (Priorytet 6): jeden samodzielny plik .html.
             ToolbarItem(placement: .automatic) {
@@ -226,6 +237,7 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Eksportuj notatkę jako stronę HTML", "Export note as an HTML page"))
+                .disabled(showDrawing)
             }
             ToolbarItem(placement: .automatic) {
                 Button(action: printNote) {
@@ -233,6 +245,7 @@ struct NoteDetailView: View {
                         .foregroundStyle(accent)
                 }
                 .help(settings.t("Drukuj notatkę", "Print note"))
+                .disabled(showDrawing)
             }
 
             // Flexible spacer breaks the glass background into a second cluster
