@@ -263,6 +263,8 @@ struct NoteDetailView: View {
         .onDisappear {
             saveTask?.cancel()
             flush()
+            // The editor is gone, so there is nothing left for a quit to save.
+            PendingWork.shared.unregister(note.id)
             // Belt and braces: never leave a reload blocked by a closed editor.
             model.endPendingEdits(for: note.id)
             controller.hideFloatingPanel()
@@ -277,6 +279,9 @@ struct NoteDetailView: View {
         let markdown = model.content(for: note)
         loadedMarkdown = markdown
         dirty = false
+        // Quitting must not swallow the last second of typing: the autosave is a
+        // one-second debounce and `.onDisappear` does not run on ⌘Q.
+        PendingWork.shared.register(note.id) { flush() }
         let noteFolder = model.noteFolder(for: note)
         // Resolved live: the filing rules can move this note to another category
         // while the editor stays open, and the path captured here would then be

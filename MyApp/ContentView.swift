@@ -696,6 +696,12 @@ struct ContentView: View {
                 model.switchStorage(syncEnabled: settings.syncEnabled, moveExisting: false)
                 QuickCaptureManager.shared.start(model: model, settings: settings)
                 SyncManager.shared.start(model: model, settings: settings)
+                // Nothing unwritten may die with the process: the editor autosave
+                // and the Obsidian mirror are both debounces, and ⌘Q does not wait
+                // for them. Idempotent, like the other `start()` calls here —
+                // `onAppear` runs once per window.
+                PendingWork.shared.afterFlush = { [model] in model.flushPendingObsidianExports() }
+                PendingWork.shared.start()
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
                 // Thin overlay scrollers across the app. SwiftUI Lists reset their
                 // scroller style on content/layout updates, so re-apply on several

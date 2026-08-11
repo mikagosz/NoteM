@@ -399,6 +399,23 @@ final class NotesModel {
     /// Clears a stuck export error (after the user fixed the vault path).
     func clearObsidianError() { obsidianError = nil }
 
+    /// Runs the debounced auto-exports now instead of waiting out their three
+    /// seconds. Called when the application is quitting (`PendingWork`): the wait
+    /// exists so Obsidian's file watcher doesn't see a change on every keystroke
+    /// pause, and a process that is going away has no more keystrokes to debounce.
+    ///
+    /// Runs after the editors have flushed, so the copy in the vault carries the
+    /// text that was just written, not the version from before the last keystroke.
+    func flushPendingObsidianExports() {
+        let pending = obsidianExportTasks
+        obsidianExportTasks.removeAll()
+        for (id, entry) in pending {
+            entry.task.cancel()
+            guard let note = notes.first(where: { $0.id == id }) else { continue }
+            exportToObsidian(note)
+        }
+    }
+
     /// Debounced auto-export: a burst of autosaves while typing produces a single
     /// vault write once the note has been quiet for a few seconds, so Obsidian's
     /// file watcher doesn't see the note change on every keystroke pause.

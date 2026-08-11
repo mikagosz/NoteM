@@ -473,6 +473,9 @@ struct QuickCaptureView: View {
     @State private var isTaskList = false
     /// Confirmation before the quick note is saved and sent to the vault.
     @State private var showObsidianConfirm = false
+    /// Identifies this panel in `PendingWork`. Per panel, not per note — a quick
+    /// note has no id until it is saved, and several panels can be open at once.
+    @State private var pendingID = UUID()
 
     /// Weekday + full date at the moment the note opened, in the app language,
     /// e.g. "czwartek, 16 lipca 2026" / "Thursday, July 16, 2026".
@@ -498,7 +501,7 @@ struct QuickCaptureView: View {
             }
             // Close (discard) button — bottom-left.
             .overlay(alignment: .bottomLeading) {
-                Button(Loc.t("Zamknij", "Close")) { onClose() }
+                Button(Loc.t("Zamknij", "Close")) { close() }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .controlSize(.small)
@@ -585,6 +588,10 @@ struct QuickCaptureView: View {
                 controller.setContent(
                     NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
                 )
+                // Quick capture has no autosave, so without this a quit would throw
+                // away everything typed here. The red "Close" button still discards
+                // on purpose — only quitting saves.
+                PendingWork.shared.register(pendingID) { saveIfTyped() }
                 // Put the caret in the editor so the user can type right away.
                 DispatchQueue.main.async {
                     if let textView = controller.textView {
@@ -592,7 +599,10 @@ struct QuickCaptureView: View {
                     }
                 }
             }
-            .onDisappear { controller.hideFloatingPanel() }
+            .onDisappear {
+                PendingWork.shared.unregister(pendingID)
+                controller.hideFloatingPanel()
+            }
             .onExitCommand { saveAndClose() }
     }
 
@@ -603,17 +613,35 @@ struct QuickCaptureView: View {
             let richData = NoteRichArchive.data(from: attributed)
             onSaveToObsidian?(markdown, richData, isTaskList)
         }
-        onClose()
+        close()
     }
 
     /// Esc / save button: saves only if something was typed, then closes.
     private func saveAndClose() {
-        if let attributed = controller.textView?.attributedString() {
-            let markdown = MarkdownStyler.markdown(from: attributed)
-            let richData = NoteRichArchive.data(from: attributed)
-            onSave(markdown, richData, isTaskList)
-        }
+        saveIfTyped()
+        close()
+    }
+
+    /// Closes the panel and takes it off the pending list.
+    ///
+    /// The unregister does not wait for `.onDisappear`: the panel is dismissed with
+    /// `orderOut`, and a hosted view that never reports disappearing would leave a
+    /// handler behind — which on quit would save the same note a second time.
+    private func close() {
+        PendingWork.shared.unregister(pendingID)
         onClose()
+    }
+
+    /// Hands the panel's text to `onSave`, which drops it when it is blank.
+    ///
+    /// Split out of `saveAndClose` because quitting has to save without closing:
+    /// quick capture has no autosave at all, so until this existed, ⌘Q with an open
+    /// panel threw away everything typed into it.
+    private func saveIfTyped() {
+        guard let attributed = controller.textView?.attributedString() else { return }
+        let markdown = MarkdownStyler.markdown(from: attributed)
+        let richData = NoteRichArchive.data(from: attributed)
+        onSave(markdown, richData, isTaskList)
     }
 }
 
