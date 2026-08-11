@@ -32,4 +32,21 @@ enum RegexReplace {
         result += ns.substring(from: location)
         return result
     }
+
+    /// Replaces every match of `pattern` with a fixed string. Separate from
+    /// `apply` because the caller that needs it (`HTMLPasteGuard`) cuts pieces
+    /// out rather than rebuilding them from groups, and needs regex options —
+    /// HTML tags come in any case, and elements span lines.
+    ///
+    /// An invalid pattern leaves `text` untouched.
+    static func replacing(_ pattern: String, in text: String, with replacement: String,
+                          options: NSRegularExpression.Options = []) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return text }
+        let ns = text as NSString
+        return regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(location: 0, length: ns.length),
+            withTemplate: NSRegularExpression.escapedTemplate(for: replacement)
+        )
+    }
 }

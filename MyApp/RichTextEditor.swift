@@ -2129,15 +2129,11 @@ final class NoteTextView: NSTextView {
             return
         }
 
+        // Through the guard, never straight into the importer: the system HTML
+        // reader fetches whatever the document points at, and a paste has no
+        // business opening a connection. See `HTMLPasteGuard`.
         if let data = pasteboard.data(forType: .html),
-           let attributed = try? NSAttributedString(
-               data: data,
-               options: [
-                   .documentType: NSAttributedString.DocumentType.html,
-                   .characterEncoding: String.Encoding.utf8.rawValue
-               ],
-               documentAttributes: nil
-           ) {
+           let attributed = HTMLPasteGuard.attributedString(fromPastedHTML: data) {
             insertExternal(attributed)
             return
         }
@@ -2174,14 +2170,10 @@ final class NoteTextView: NSTextView {
         } else if let data = pasteboard.data(forType: .rtf) {
             source = NSAttributedString(rtf: data, documentAttributes: nil)
         } else if let data = pasteboard.data(forType: .html) {
-            source = try? NSAttributedString(
-                data: data,
-                options: [
-                    .documentType: NSAttributedString.DocumentType.html,
-                    .characterEncoding: String.Encoding.utf8.rawValue
-                ],
-                documentAttributes: nil
-            )
+            // Same guard as in `paste(_:)`. `PasteSanitizer` below cannot help
+            // here — it runs on the finished attributed string, by which time the
+            // request has already gone out.
+            source = HTMLPasteGuard.attributedString(fromPastedHTML: data)
         }
         guard let source else {
             super.pasteAsPlainText(sender)

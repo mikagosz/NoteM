@@ -138,6 +138,13 @@ NoteM makes **no network connections**. There is no telemetry, no analytics, no
 account and no server. Dictation and semantic search both run on-device. Your
 notes go to your disk and — only if you turn sync on — to your own iCloud Drive.
 
+That includes pasting. The system's HTML reader fetches images and stylesheets a
+copied web fragment points at, so NoteM strips those references before the paste
+is read: nothing is requested, and no server learns that you pasted from its page.
+The cost is that an HTML-only paste arrives without pictures it referenced by URL —
+images copied from a browser come through the richer clipboard formats and are
+unaffected.
+
 ---
 
 ## Requirements
