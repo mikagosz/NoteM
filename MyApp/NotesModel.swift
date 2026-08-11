@@ -49,6 +49,10 @@ final class NotesModel {
     /// re-reads the note as part of the save.
     @ObservationIgnored private var attachmentsReadAt: [UUID: Date] = [:]
 
+    /// Note text, cached by `content(for:)`. See that method for why.
+    @ObservationIgnored private var contentByNote: [UUID: String] = [:]
+    @ObservationIgnored private var contentReadAt: [UUID: Date] = [:]
+
     /// Last failed write to disk (note text, metadata, attachment, trash move),
     /// or `nil` when everything landed. Shown as a banner so a save that didn't
     /// reach the disk can't pass unnoticed.
@@ -368,9 +372,28 @@ final class NotesModel {
         dropAttachments(for: note.id)
     }
 
-    /// Current on-disk content of a note.
+    /// Current text of a note, read from disk at most once per change.
+    ///
+    /// The cache exists because two different consumers want the same bytes: the
+    /// attachment index (links inside the note) and the list (search and the card
+    /// snippet). Each used to read the file for itself, so starting the app read
+    /// every note twice — on the main thread, since this class is `@MainActor`.
+    ///
+    /// Keyed on `modified`, like the attachment index, and with the same known
+    /// limit: `meta.json` keeps that stamp to the second, so a change written by
+    /// another process inside the same second as our read looks like no change.
+    /// Our own saves are covered — `save` puts the new text in here itself.
+    ///
+    /// Costs nothing in memory over what the list already held: Swift strings are
+    /// copy-on-write, so the caller's copy and this one share their storage.
     func content(for note: Note) -> String {
-        store.loadContent(for: note)
+        if contentReadAt[note.id] == note.modified, let cached = contentByNote[note.id] {
+            return cached
+        }
+        let text = store.loadContent(for: note)
+        contentByNote[note.id] = text
+        contentReadAt[note.id] = note.modified
+        return text
     }
 
     /// Full-fidelity rich archive of a note (colours, fonts, pasted formatting),
@@ -619,6 +642,11 @@ final class NotesModel {
         // ever deleted in memory for the rest of the session.
         attachmentsByNote = refs
         attachmentsReadAt = stamps
+        // Same reason as above, for the text cache: a note deleted on the other
+        // Mac would otherwise keep its content in memory for the whole session.
+        let live = Set(notes.map(\.id))
+        contentByNote = contentByNote.filter { live.contains($0.key) }
+        contentReadAt = contentReadAt.filter { live.contains($0.key) }
         recomposeAttachments()
     }
 
@@ -633,6 +661,8 @@ final class NotesModel {
     private func dropAttachments(for noteID: UUID) {
         attachmentsByNote.removeValue(forKey: noteID)
         attachmentsReadAt.removeValue(forKey: noteID)
+        contentByNote.removeValue(forKey: noteID)
+        contentReadAt.removeValue(forKey: noteID)
         recomposeAttachments()
     }
 
@@ -662,7 +692,7 @@ final class NotesModel {
             ))
         }
         // Web / mail links written anywhere in the note's markdown.
-        for link in Self.webLinks(in: store.loadContent(for: note)) {
+        for link in Self.webLinks(in: content(for: note)) {
             result.append(AttachmentRef(
                 noteID: note.id,
                 noteTitle: note.title,
@@ -742,6 +772,10 @@ final class NotesModel {
 
         notes[index] = saved
         notes.sort(by: Self.pinnedThenModified)
+        // The text is right here — no reason for anything to read it back off the
+        // disk to find out what was just written.
+        contentByNote[saved.id] = content
+        contentReadAt[saved.id] = saved.modified
         refreshAttachments(for: saved)
 
         if obsidianConfigProvider().autoExport {
