@@ -37,6 +37,11 @@ struct NoteDetailView: View {
     @State private var voiceError: String?
     /// Problem with a PDF export / print job, shown as an alert.
     @State private var exportError: String?
+
+    /// The note's rich archive was refused, so what is on screen was rebuilt from
+    /// `note.md`. Shown until dismissed — silently dropping someone's colours and
+    /// inline images is exactly the kind of loss that gets noticed a week later.
+    @State private var formattingRebuilt = false
     /// Confirmation before the note is copied into the Obsidian vault.
     @State private var showObsidianConfirm = false
     /// Opens the Settings window (gear lives in the right toolbar cluster).
@@ -66,6 +71,27 @@ struct NoteDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if formattingRebuilt {
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.rays.inverse")
+                        .foregroundStyle(.orange)
+                    Text(settings.t(
+                        "Formatowanie tej notatki odtworzono z tekstu — zapisany plik z kolorami "
+                        + "i obrazkami pochodzi ze starszej wersji programu i nie został otwarty.",
+                        "This note's formatting was rebuilt from its text — the saved file with "
+                        + "colours and images comes from an older version and was not opened."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(settings.t("Ukryj", "Dismiss")) { formattingRebuilt = false }
+                        .font(.caption)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.background.opacity(0.95))
+                Divider()
+            }
             // Hide the tag bar while drawing so the drawing controls don't overlap it.
             if !showDrawing {
                 TagBar(
@@ -293,11 +319,24 @@ struct NoteDetailView: View {
         // Prefer the full-fidelity rich archive (colours, fonts, pasted
         // formatting, images); fall back to markdown for notes saved before rich
         // storage existed — they gain a note.rich on their next save.
-        if let data = model.richContent(for: note),
-           let attributed = NoteRichArchive.attributedString(from: data) {
-            controller.setContent(attributed)
+        // Written out rather than `.map(NoteRichArchive.read)`: passing the method
+        // as a value takes it out of actor isolation (a warning today, an error in
+        // Swift 6) — the same trap as `map(slug)` in `ObsidianExport`.
+        let fromMarkdown = { MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder) }
+        if let data = model.richContent(for: note) {
+            switch NoteRichArchive.read(data) {
+            case .decoded(let attributed):
+                controller.setContent(attributed)
+            case .refused:
+                // The text is all there; what is missing is the styling. Saying so
+                // matters because the note.rich stays on disk and the next save
+                // overwrites it — the user should know what they are about to lose.
+                controller.setContent(fromMarkdown())
+                formattingRebuilt = true
+            }
         } else {
-            controller.setContent(MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder))
+            // No archive at all: an old markdown-only note. Nothing was lost.
+            controller.setContent(fromMarkdown())
         }
         controller.onChange = {
             dirty = true

@@ -62,15 +62,31 @@ enum NoteRichArchive {
         try? NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString
     }
 
-    static func attributedString(from data: Data) -> NSAttributedString? {
-        if let attributed = secureAttributedString(from: data) { return attributed }
-        // Fallback for note.rich only — a file in the app's own store, written by
-        // an older build whose archive may hold a class outside the list above.
-        // Losing it would mean losing the note's formatting and inline images,
-        // which is why this path stays; the clipboard never uses it.
-        guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else { return nil }
-        unarchiver.requiresSecureCoding = false
-        return unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSAttributedString
+    /// What came back from reading a note's `note.rich`.
+    enum Reading: Equatable {
+        case decoded(NSAttributedString)
+        /// The archive is there but asks for something outside `allowedClasses`.
+        /// The caller rebuilds the note from `note.md` and says so — a note that
+        /// quietly comes back plain looks like the formatting was lost.
+        case refused
+    }
+
+    /// Reads a note's rich archive, with secure coding on and nothing else.
+    ///
+    /// There used to be a fallback here that decoded with `requiresSecureCoding
+    /// = false`, justified by the file living "in the app's own store". That is a
+    /// weaker boundary than it sounds: the store sits in `~/Documents` or iCloud
+    /// Drive, the app is not sandboxed, and the file may have arrived from the
+    /// other Mac. Whoever can put a file in the user's home directory could then
+    /// have arbitrary classes instantiated when the note is opened.
+    ///
+    /// What the fallback bought was old notes keeping their colours and inline
+    /// images. Measured on 2026-08-11 against the real store: **3 of 3** archives
+    /// decode securely, none needed it. Small sample — hence `refused` telling the
+    /// user rather than the note going plain in silence — but it does mean the
+    /// gate was standing open for a case that has not turned up.
+    static func read(_ data: Data) -> Reading {
+        secureAttributedString(from: data).map(Reading.decoded) ?? .refused
     }
 }
 
