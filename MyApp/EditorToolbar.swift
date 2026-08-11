@@ -442,11 +442,22 @@ private struct TableGridPicker: View {
             // Manual entry: columns × rows, with the insert button underneath.
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
+                    // The fields snap back to the limit as soon as it's exceeded,
+                    // so the refusal is visible in the field itself — otherwise
+                    // typing 300 and getting 50 looks like the program ignored you.
                     TextField("", value: $manualCols, format: .number)
                         .frame(width: 40).textFieldStyle(.roundedBorder)
+                        .onChange(of: manualCols) { _, new in
+                            let value = clamped(new)
+                            if value != new { manualCols = value }
+                        }
                     Text("×").foregroundStyle(.secondary)
                     TextField("", value: $manualRows, format: .number)
                         .frame(width: 40).textFieldStyle(.roundedBorder)
+                        .onChange(of: manualRows) { _, new in
+                            let value = clamped(new)
+                            if value != new { manualRows = value }
+                        }
                 }
                 Button(Loc.t("Wstaw tabelę…", "Insert table…")) {
                     onPick(clamped(manualRows), clamped(manualCols))

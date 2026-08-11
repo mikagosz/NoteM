@@ -372,6 +372,26 @@ final class NotesModel {
         dropAttachments(for: note.id)
     }
 
+    /// Permanently deletes several notes at once, and reports how many really
+    /// went. A note whose files can't be removed is left in the trash rather than
+    /// disappearing from the list while still sitting on disk — so the count is
+    /// the answer to "is the trash now empty", not a guess.
+    @discardableResult
+    func deletePermanently(_ notes: [Note]) -> Int {
+        var removed = 0
+        for note in notes {
+            let before = trashedNotes.count
+            deletePermanently(note)
+            if trashedNotes.count < before { removed += 1 }
+        }
+        return removed
+    }
+
+    /// Restores several notes at once.
+    func restore(_ notes: [Note]) {
+        for note in notes { restore(note) }
+    }
+
     /// Current text of a note, read from disk at most once per change.
     ///
     /// The cache exists because two different consumers want the same bytes: the

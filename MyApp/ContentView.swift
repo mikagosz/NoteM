@@ -1095,9 +1095,28 @@ struct FilteredNotesView: View {
 }
 
 /// Trash view: deleted notes with restore / permanent-delete actions.
+///
+/// Trash is the last place a note still exists, so permanent deletion asks first
+/// — and can be done for several notes at once, because confirming one dialog per
+/// note is its own kind of trap: it teaches you to click "yes" without reading.
 struct TrashView: View {
     let model: NotesModel
     let settings: AppSettings
+
+    /// Notes ticked for a bulk action.
+    @State private var selected: Set<UUID> = []
+    /// Notes waiting for the "really delete?" answer. Empty means nothing pending,
+    /// which is also what drives the dialog — one source of truth, so the dialog
+    /// can never fire with an empty list.
+    @State private var pendingDelete: [Note] = []
+
+    private var allSelected: Bool {
+        !model.trashedNotes.isEmpty && selected.count == model.trashedNotes.count
+    }
+
+    private var selectedNotes: [Note] {
+        model.trashedNotes.filter { selected.contains($0.id) }
+    }
 
     var body: some View {
         Group {
@@ -1109,28 +1128,127 @@ struct TrashView: View {
                                                 "Deleted notes land here and can be restored."))
                 )
             } else {
-                List {
-                    ForEach(model.trashedNotes) { note in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(note.title)
-                                    .lineLimit(1)
-                                if let deletedAt = note.deletedAt {
-                                    Text(settings.t("Usunięto \(deletedAt.noteMDisplay)", "Deleted \(deletedAt.noteMDisplay)"))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Button(settings.t("Przywróć", "Restore")) { model.restore(note) }
-                            Button(settings.t("Usuń trwale", "Delete permanently"), role: .destructive) { model.deletePermanently(note) }
-                        }
-                        .padding(.vertical, 2)
+                VStack(spacing: 0) {
+                    bulkBar
+                    Divider()
+                    List {
+                        ForEach(model.trashedNotes) { note in row(for: note) }
                     }
                 }
             }
         }
         .navigationTitle(settings.t("Kosz", "Trash"))
+        // Drop ticks for notes that are no longer in the trash (restored here or
+        // on the other Mac), so a stale id can't be swept up by "delete selected".
+        .onChange(of: model.trashedNotes.map(\.id)) { _, ids in
+            selected.formIntersection(Set(ids))
+        }
+        .confirmationDialog(
+            confirmTitle,
+            isPresented: Binding(get: { !pendingDelete.isEmpty },
+                                 set: { if !$0 { pendingDelete = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button(settings.t("Usuń trwale", "Delete permanently"), role: .destructive) {
+                let notes = pendingDelete
+                pendingDelete = []
+                model.deletePermanently(notes)
+                selected.subtract(Set(notes.map(\.id)))
+            }
+            Button(settings.t("Anuluj", "Cancel"), role: .cancel) { pendingDelete = [] }
+        } message: {
+            Text(settings.t("Tego nie da się cofnąć — notatki nie ma potem nigdzie.",
+                            "This cannot be undone — the note is then gone for good."))
+        }
+    }
+
+    /// Title of the confirmation, naming the single note or counting the batch.
+    private var confirmTitle: String {
+        if pendingDelete.count == 1 {
+            let title = pendingDelete[0].title
+            let name = title.isEmpty ? settings.t("Bez tytułu", "Untitled") : title
+            return settings.t("Usunąć trwale „\(name)”?", "Permanently delete “\(name)”?")
+        }
+        return settings.t("Usunąć trwale \(pendingDelete.count) notatek?",
+                          "Permanently delete \(pendingDelete.count) notes?")
+    }
+
+    /// Select-all plus the actions that work on the ticked notes.
+    private var bulkBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                selected = allSelected ? [] : Set(model.trashedNotes.map(\.id))
+            } label: {
+                Label(allSelected ? settings.t("Odznacz wszystkie", "Deselect all")
+                                  : settings.t("Zaznacz wszystkie", "Select all"),
+                      systemImage: allSelected ? "checkmark.square.fill" : "square")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+
+            if !selected.isEmpty {
+                Text(settings.t("zaznaczone: \(selected.count)", "selected: \(selected.count)"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Spacer()
+
+            Button(settings.t("Przywróć zaznaczone", "Restore selected")) {
+                model.restore(selectedNotes)
+                selected = []
+            }
+            .disabled(selected.isEmpty)
+
+            Button(settings.t("Usuń trwale zaznaczone", "Delete selected permanently")) {
+                pendingDelete = selectedNotes
+            }
+            .disabled(selected.isEmpty)
+            .tint(.red)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func row(for note: Note) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                if selected.contains(note.id) { selected.remove(note.id) } else { selected.insert(note.id) }
+            } label: {
+                Image(systemName: selected.contains(note.id) ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15))
+                    .foregroundStyle(selected.contains(note.id) ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(settings.t("Zaznacz notatkę", "Select note"))
+            .accessibilityValue(selected.contains(note.id) ? settings.t("zaznaczona", "selected")
+                                                           : settings.t("niezaznaczona", "not selected"))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(note.title.isEmpty ? settings.t("Bez tytułu", "Untitled") : note.title)
+                    .lineLimit(1)
+                if let deletedAt = note.deletedAt {
+                    Text(settings.t("Usunięto \(deletedAt.noteMDisplay)", "Deleted \(deletedAt.noteMDisplay)"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button(settings.t("Przywróć", "Restore")) { model.restore(note) }
+
+            // A deliberate gap and a red button: the two actions sit in one row,
+            // and only one of them can be taken back.
+            Spacer().frame(width: 28)
+
+            Button(settings.t("Usuń trwale", "Delete permanently")) {
+                pendingDelete = [note]
+            }
+            .tint(.red)
+        }
+        .padding(.vertical, 2)
     }
 }
 
