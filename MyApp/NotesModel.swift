@@ -99,7 +99,7 @@ final class NotesModel {
     /// old root, next to notes that aren't there any more, and the other Mac
     /// would have to compute every vector from scratch.
     private func configureSemanticIndex() {
-        let indexURL = store.rootURL.appendingPathComponent("semantic_index.json")
+        let indexURL = store.rootURL.appendingPathComponent(NoteStore.semanticIndexFile)
         Task { await semanticIndex.configure(indexURL: indexURL) }
     }
 
@@ -222,19 +222,46 @@ final class NotesModel {
         guard newRoot != store.rootURL else { return }
         let savedErrorHandler = store.onWriteError
         let oldRoot = store.rootURL
-        var stragglers: [String] = []
+        var outcome = NoteStore.MoveOutcome()
         if moveExisting {
-            stragglers = NoteStore.moveContents(from: oldRoot, to: newRoot)
+            outcome = NoteStore.moveContents(from: oldRoot, to: newRoot)
         }
         store = NoteStore(rootURL: newRoot)
         store.onWriteError = savedErrorHandler
         connectStoreErrors()
-        if !stragglers.isEmpty {
-            storeError = Loc.t("Nie udało się przenieść \(stragglers.count) elementów — zostały w \(oldRoot.path)",
-                               "Could not move \(stragglers.count) items — they stayed in \(oldRoot.path)")
+        // Anything that stayed behind leaves the app's view entirely, so saying
+        // nothing would look exactly like the notes being gone.
+        if let message = Self.moveReport(outcome, oldRoot: oldRoot) {
+            storeError = message
         }
         configureSemanticIndex()
         reload()
+    }
+
+    /// Turns a move outcome into one sentence for the user, or `nil` when the whole
+    /// store came across.
+    ///
+    /// Failures and conflicts are worded apart on purpose: a failure means the move
+    /// did not work and may work on a second try, while a conflict means the app
+    /// refused to overwrite something and needs a decision. Both name the old root,
+    /// because "still in ~/Documents/NoteM" is the difference between "my notes are
+    /// gone" and "my notes are over there".
+    private static func moveReport(_ outcome: NoteStore.MoveOutcome, oldRoot: URL) -> String? {
+        guard !outcome.isEmpty else { return nil }
+        var parts: [String] = []
+        if !outcome.failed.isEmpty {
+            parts.append(Loc.t("nie udało się przenieść \(outcome.failed.count)",
+                               "could not move \(outcome.failed.count)"))
+        }
+        if !outcome.conflicted.isEmpty {
+            parts.append(Loc.t("\(outcome.conflicted.count) zostawiono, bo w nowym miejscu były już pliki o tych nazwach",
+                               "\(outcome.conflicted.count) left alone because the new location already had files with those names"))
+        }
+        let what = parts.joined(separator: Loc.t("; ", "; "))
+        let names = (outcome.failed + outcome.conflicted).prefix(5).joined(separator: ", ")
+        let more = outcome.count > 5 ? Loc.t(" i \(outcome.count - 5) więcej", " and \(outcome.count - 5) more") : ""
+        return Loc.t("Notatki: \(what). Zostały w \(oldRoot.path) — \(names)\(more)",
+                     "Notes: \(what). They stayed in \(oldRoot.path) — \(names)\(more)")
     }
 
     /// Resolves a conflict by keeping one version and permanently removing the

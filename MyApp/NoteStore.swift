@@ -24,6 +24,10 @@ final class NoteStore {
     /// How many `note.md` snapshots to keep per note.
     private static let historyLimit = 20
     private static let manifestFile = "manifest.json"
+    /// Cache of the semantic search vectors, written by `SemanticIndex` next to the
+    /// notes. Named here because the store has to know which files it may drop
+    /// during a move — this one is rebuilt, so it is not user data.
+    static let semanticIndexFile = "semantic_index.json"
 
     private struct Manifest: Codable { var lastModified: Date }
 
@@ -456,31 +460,95 @@ final class NoteStore {
         return true
     }
 
-    /// Moves every top-level entry (note folders, `.trash`, `.history`) from one
-    /// store root into another, used when switching between local and iCloud
-    /// storage. Existing items at the destination are left untouched.
+    /// What a store move could not take across.
+    struct MoveOutcome {
+        /// Items whose move threw — no permission, no space, volume gone.
+        var failed: [String] = []
+        /// Items that already existed at the destination under the same name and
+        /// were therefore left where they were. Nothing is ever overwritten.
+        var conflicted: [String] = []
+
+        var isEmpty: Bool { failed.isEmpty && conflicted.isEmpty }
+        var count: Int { failed.count + conflicted.count }
+    }
+
+    /// Files the store rebuilds by itself. A copy left behind in the old root is
+    /// not a loss and must not be reported as one.
+    private static let regeneratedFiles: Set<String> = [manifestFile, semanticIndexFile]
+
+    /// Moves a whole store from one root into another, used when switching between
+    /// local and iCloud storage.
     ///
-    /// Returns the names that could not be moved, so the caller can tell the user
-    /// which notes stayed behind instead of silently losing half the library.
-    static func moveContents(from source: URL, to destination: URL) -> [String] {
+    /// Merges rather than skipping. Whole folders move in one step when the
+    /// destination has nothing under that name; when both sides have a folder of
+    /// the same name it descends into it and moves the contents. **Nothing is ever
+    /// overwritten** — a file present on both sides stays where it is and comes
+    /// back as `conflicted`.
+    ///
+    /// The previous version skipped any top-level entry that already existed and
+    /// said nothing about it. Since the top level is category folders, a second
+    /// switch (`Inbox` already in iCloud) left every locally written note behind
+    /// and dropped it out of the app without a word — the notes were on disk,
+    /// but as far as the user could tell they were gone.
+    static func moveContents(from source: URL, to destination: URL) -> MoveOutcome {
         let fm = FileManager.default
+        var outcome = MoveOutcome()
         do {
             try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         } catch {
-            return [destination.lastPathComponent]
+            outcome.failed.append(destination.lastPathComponent)
+            return outcome
         }
-        guard let items = try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return [] }
-        var failed: [String] = []
+        merge(from: source, to: destination, prefix: "", fileManager: fm, into: &outcome)
+        return outcome
+    }
+
+    /// One level of the merge. `prefix` is the path relative to the store root, so
+    /// what comes back names the note ("Praca/2026-08-11_10-15-29"), not just the
+    /// last path component — which by itself would tell the user nothing.
+    private static func merge(
+        from source: URL,
+        to destination: URL,
+        prefix: String,
+        fileManager fm: FileManager,
+        into outcome: inout MoveOutcome
+    ) {
+        guard let items = try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) else { return }
         for item in items {
-            let target = destination.appendingPathComponent(item.lastPathComponent)
-            guard !fm.fileExists(atPath: target.path) else { continue }
-            do {
-                try fm.moveItem(at: item, to: target)
-            } catch {
-                failed.append(item.lastPathComponent)
+            let name = item.lastPathComponent
+            let relative = prefix.isEmpty ? name : prefix + "/" + name
+            let target = destination.appendingPathComponent(name)
+
+            guard fm.fileExists(atPath: target.path) else {
+                do {
+                    try fm.moveItem(at: item, to: target)
+                } catch {
+                    outcome.failed.append(relative)
+                }
+                continue
+            }
+
+            // Both sides have this name. Two folders can be merged; anything else
+            // would have to be overwritten, and this move never overwrites.
+            if isDirectory(item, fm) && isDirectory(target, fm) {
+                merge(from: item, to: target, prefix: relative, fileManager: fm, into: &outcome)
+                // An emptied folder has nothing left to say; leaving it behind
+                // would show up as a phantom category in the old root.
+                if (try? fm.contentsOfDirectory(atPath: item.path))?.isEmpty == true {
+                    try? fm.removeItem(at: item)
+                }
+            } else if prefix.isEmpty && regeneratedFiles.contains(name) {
+                // Rebuilt on the next write — not a loss, so not a report.
+                try? fm.removeItem(at: item)
+            } else {
+                outcome.conflicted.append(relative)
             }
         }
-        return failed
+    }
+
+    private static func isDirectory(_ url: URL, _ fm: FileManager) -> Bool {
+        var isDir: ObjCBool = false
+        return fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
     }
 
     // MARK: - Helpers

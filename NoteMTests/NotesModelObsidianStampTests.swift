@@ -7,7 +7,7 @@ import Testing
 /// the vault. So the stamp saying "there is a copy" while the copy is gone is not
 /// a cosmetic slip: nothing in the app will ever offer to send that note again.
 ///
-/// Found through the AppBridge bridge on 2026-08-09: send → trash → restore left
+/// Found by automated end-to-end testing on 2026-08-09: send → trash → restore left
 /// a green crystal over an empty vault.
 @MainActor
 struct NotesModelObsidianStampTests {
