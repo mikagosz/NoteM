@@ -6,13 +6,19 @@
 	     Runtime is on in Release; without it the mic is denied. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<!-- Files the user picks in an open panel (attachments). Inert: the app is not
-	     sandboxed (ENABLE_APP_SANDBOX = NO), so nothing consults this today.
-	     Kept rather than removed, but do not read it as "the sandbox is one switch
-	     away" — read-only would not cover writing the notes themselves, so turning
-	     the sandbox on needs this entitlement widened and the store moved into the
-	     container. Audit note P3-04, 2026-08-11. -->
-	<key>com.apple.security.files.user-selected.read-only</key>
-	<true/>
+	<!-- Nothing else. `files.user-selected.read-only` used to sit here and did
+	     nothing: the app is not sandboxed (ENABLE_APP_SANDBOX = NO), so no entitlement
+	     governs file access, and it read as "the sandbox is one switch away" when it
+	     is not — read-only would not even cover writing the notes. Turning the sandbox
+	     on means a wider file entitlement and moving the store into the container,
+	     which is a decision, not a leftover. Removed 2026-08-11 (audit P3-04).
+
+	     This file is not the whole story, and the difference is invisible from here:
+	     deleting the key changed nothing in the signed product, because
+	     ENABLE_USER_SELECTED_FILES = readonly in the build settings put it straight
+	     back. It had to go in both places. The same mechanism supplies the microphone
+	     from ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES — so always read the result off
+	     the built package (`codesign -d --entitlements -`), never off this file. -->
+
 </dict>
 </plist>
