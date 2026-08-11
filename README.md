@@ -150,6 +150,21 @@ falls back to `SFSpeechRecognizer` otherwise, so it works across the supported
 range. Semantic search quietly disables itself if the on-device embedding model
 isn't available.
 
+### Permissions
+
+NoteM works without granting anything. Two optional features ask for a system
+permission the first time you turn them on, and both keep working — minus that
+feature — if you say no.
+
+| Feature | Permission | If you decline |
+|---|---|---|
+| Live dictation | Microphone, Speech Recognition | Dictation won't start and says why; everything else is unaffected |
+| Quick capture (⌥⌘N and the hot corner) | Accessibility | The shortcut and the corner stay silent. Quick Capture in Settings shows the current status and a button to System Settings |
+
+Accessibility is what lets an app see keyboard events while another app is in front —
+that's the only reason NoteM asks for it, and the handler ignores every key except
+⌥⌘N (`QuickCapture.swift`). Keystrokes are neither recorded nor stored.
+
 ## Building
 
 ```bash
@@ -176,8 +191,8 @@ Run Locally*, or point it at your own certificate.
 xcodebuild -project NoteM.xcodeproj -scheme NoteM -destination 'platform=macOS' test
 ```
 
-102 tests covering the storage layer, the Obsidian export and the filing engine —
-the three places where a bug costs you data rather than pixels.
+The suite covers the storage layer, the Obsidian export, the filing engine and the
+save-on-quit path — the places where a bug costs you data rather than pixels.
 
 ## Project layout
 
@@ -191,6 +206,7 @@ the three places where a bug costs you data rather than pixels.
 | Input | `VoiceNotes.swift`, `DrawingEditor.swift`, `QuickCapture.swift` |
 | Export | `ObsidianExport.swift`, `HTMLExport.swift` |
 | Sync | `Sync.swift` |
+| Shutdown | `PendingWork.swift` — flushes debounced writes when the app quits |
 | Misc | `Theme.swift`, `Localization.swift` |
 
 ## Licence

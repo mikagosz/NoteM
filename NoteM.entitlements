@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Live dictation records from the microphone. Required because Hardened
+	     Runtime is on in Release; without it the mic is denied. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Files the user picks in an open panel (attachments). Inert while the app
+	     is not sandboxed, kept so turning the sandbox on doesn't silently lose it. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+</dict>
+</plist>
