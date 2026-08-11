@@ -5,11 +5,41 @@ import AppKit
 
 /// Resolves the store root for local vs. iCloud storage.
 ///
-/// `nonisolated`, because `NoteStore` takes its default root from here and is
-/// built off the main actor (see `NotesModel.init`). Everything used below —
-/// `UserDefaults`, `ProcessInfo`, `FileManager` — is safe to touch from any
-/// thread.
+/// `nonisolated`, so the roots can be resolved from wherever a store is being
+/// built. Everything used below — `UserDefaults`, `ProcessInfo`, `FileManager` —
+/// is safe to touch from any thread.
 nonisolated enum StorageLocation {
+
+    /// Where an active redirect came from. `nil` when the app is working on the
+    /// real notes.
+    ///
+    /// Surfaced so the redirect cannot be silent: it moves the notes, iCloud and
+    /// the Obsidian vault all at once, and the preferences variant survives every
+    /// restart. Without a sign in the window, an old `defaults write` looks
+    /// exactly like every note having disappeared.
+    enum Redirection: Equatable {
+        /// `defaults write com.mikagosz.NoteM NoteMStoreRoot …` — persistent, and
+        /// the reason this indicator exists.
+        case preferences(String)
+        /// `open NoteM.app --args -NoteMStoreRoot …` — gone on the next launch.
+        case launchArgument(String)
+        /// The app is hosting an `xcodebuild test` run.
+        case testHost(String)
+
+        var path: String {
+            switch self {
+            case .preferences(let path), .launchArgument(let path), .testHost(let path): path
+            }
+        }
+    }
+
+    /// The redirect in force for the local store, if any. What the window shows.
+    static var redirection: Redirection? {
+        redirection(defaultsKey: storeRootKey, environmentKey: storeRootEnvironmentKey)
+    }
+
+    private static let storeRootKey = "NoteMStoreRoot"
+    private static let storeRootEnvironmentKey = "NOTEM_STORE_ROOT"
 
     /// Redirects every storage root away from the real data. Meant for test
     /// builds and throwaway copies of the app.
@@ -28,17 +58,48 @@ nonisolated enum StorageLocation {
     ///     open NoteM.app --args -NoteMStoreRoot /tmp/test/NoteM -NoteMVaultRoot /tmp/test/Vault
     ///
     /// or set `NOTEM_STORE_ROOT` / `NOTEM_VAULT_ROOT` when launching from a shell.
+    ///
+    /// The indicator in the window reads the same answer through the same call —
+    /// a second implementation asking `UserDefaults` on its own is how the roots
+    /// drifted apart the last time.
+    private static func redirection(defaultsKey: String, environmentKey: String) -> Redirection? {
+        classify(
+            defaultsPath: UserDefaults.standard.string(forKey: defaultsKey),
+            // A launch argument lands in the same `UserDefaults` lookup as a
+            // `defaults write` (the argument domain sits on top of it), so the
+            // argument list is the only thing that tells them apart — and they
+            // differ in the way that matters: one is gone next launch, the other
+            // is not.
+            defaultsCameFromLaunchArgument: ProcessInfo.processInfo.arguments.contains("-" + defaultsKey),
+            environmentPath: ProcessInfo.processInfo.environment[environmentKey],
+            testHostPath: testRoot.appendingPathComponent(defaultsKey, isDirectory: true).path,
+            isRunningTests: isRunningTests
+        )
+    }
+
+    /// The decision itself, with every input passed in. Split out so it can be
+    /// tested: the alternative is a test that writes `NoteMStoreRoot` into the
+    /// real app's preferences, and a test crashing halfway through that would
+    /// leave the user's own NoteM pointing at a scratch folder.
+    static func classify(
+        defaultsPath: String?,
+        defaultsCameFromLaunchArgument: Bool,
+        environmentPath: String?,
+        testHostPath: String,
+        isRunningTests: Bool
+    ) -> Redirection? {
+        if let path = defaultsPath, !path.isEmpty {
+            return defaultsCameFromLaunchArgument ? .launchArgument(path) : .preferences(path)
+        }
+        if let path = environmentPath, !path.isEmpty {
+            return .launchArgument(path)
+        }
+        return isRunningTests ? .testHost(testHostPath) : nil
+    }
+
     private static func overriddenRoot(defaultsKey: String, environmentKey: String) -> URL? {
-        if let path = UserDefaults.standard.string(forKey: defaultsKey), !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        if let path = ProcessInfo.processInfo.environment[environmentKey], !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        if isRunningTests {
-            return testRoot.appendingPathComponent(defaultsKey, isDirectory: true)
-        }
-        return nil
+        redirection(defaultsKey: defaultsKey, environmentKey: environmentKey)
+            .map { URL(fileURLWithPath: $0.path, isDirectory: true) }
     }
 
     /// True when this process is the host application of an `xcodebuild test` run.

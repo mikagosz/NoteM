@@ -514,6 +514,23 @@ struct ContentView: View {
         }
     }
 
+    /// Names the redirect and, more importantly, says whether it will still be
+    /// there after a restart — that is the difference between "I am testing right
+    /// now" and "my notes have been gone for a week and I don't know why".
+    private func storageRedirectionMessage(_ redirection: StorageLocation.Redirection) -> String {
+        switch redirection {
+        case .preferences(let path):
+            return settings.t("Magazyn przekierowany w preferencjach (zostaje po restarcie): \(path)",
+                              "Storage redirected in preferences (survives a restart): \(path)")
+        case .launchArgument(let path):
+            return settings.t("Magazyn przekierowany na czas tego uruchomienia: \(path)",
+                              "Storage redirected for this launch only: \(path)")
+        case .testHost(let path):
+            return settings.t("Magazyn testowy — ta kopia hostuje testy: \(path)",
+                              "Test storage — this copy is hosting a test run: \(path)")
+        }
+    }
+
     private var activeFilterLabel: String? {
         switch noteFilter {
         case .none: return nil
@@ -675,6 +692,17 @@ struct ContentView: View {
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
+                    // Redirected storage is not an error, so it has no dismiss
+                    // button: it stays up for as long as the app is working on
+                    // notes other than the real ones. Without it, a `defaults
+                    // write` left over from a test looks exactly like every note
+                    // having disappeared — the redirect survives restarts.
+                    if let redirection = StorageLocation.redirection {
+                        StatusBanner(
+                            icon: "externaldrive.fill",
+                            message: storageRedirectionMessage(redirection)
+                        )
+                    }
                     if let error = SyncManager.shared.syncError {
                         StatusBanner(icon: "exclamationmark.icloud.fill", message: error)
                     }
