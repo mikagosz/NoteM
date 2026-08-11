@@ -98,12 +98,18 @@ final class NotesModel {
     /// task tidying itself up can tell whether the slot is still its own.
     @ObservationIgnored private var obsidianExportTasks: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
 
-    /// - Parameter store: Defaults to the real store under `~/Documents/NoteM`
+    /// - Parameter store: `nil` builds the real store under `~/Documents/NoteM`
     ///   (or iCloud Drive). Tests pass one rooted in a throwaway folder —
     ///   NoteM is not sandboxed, so a test that took the default would edit the
     ///   user's actual notes.
-    init(store: NoteStore = NoteStore()) {
-        self.store = store
+    ///
+    /// The store is built inside the initializer rather than as the default value
+    /// of the parameter. A default argument is evaluated where the *caller* sits,
+    /// and the only production caller is a property initializer in `MyApp`, which
+    /// is outside any actor — so building a main-actor-isolated `NoteStore` there
+    /// was a warning under Swift 5 and would be an error under Swift 6.
+    init(store: NoteStore? = nil) {
+        self.store = store ?? NoteStore()
         connectStoreErrors()
         reload()
         configureSemanticIndex()
