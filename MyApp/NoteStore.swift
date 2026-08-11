@@ -53,12 +53,11 @@ final class NoteStore {
     init(rootURL: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
 
-        if let rootURL {
-            self.rootURL = rootURL
-        } else {
-            let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            self.rootURL = documents.appendingPathComponent("NoteM", isDirectory: true)
-        }
+        // Jedno źródło prawdy dla ścieżki — `StorageLocation`. Wcześniej ta sama
+        // ścieżka powstawała także tutaj, więc przekierowanie magazynu w jednym
+        // miejscu nie obejmowało drugiego i kopia testowa pisała do prawdziwych
+        // notatek mimo pozornej izolacji.
+        self.rootURL = rootURL ?? StorageLocation.localRoot
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

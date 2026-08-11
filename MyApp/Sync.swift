@@ -4,20 +4,96 @@ import AppKit
 // MARK: - Storage location
 
 /// Resolves the store root for local vs. iCloud storage.
-enum StorageLocation {
-    /// `~/Documents/NoteM/`.
+///
+/// `nonisolated`, because `NoteStore` takes its default root from here and is
+/// built off the main actor (see `NotesModel.init`). Everything used below —
+/// `UserDefaults`, `ProcessInfo`, `FileManager` — is safe to touch from any
+/// thread.
+nonisolated enum StorageLocation {
+
+    /// Redirects every storage root away from the real data. Meant for test
+    /// builds and throwaway copies of the app.
+    ///
+    /// NoteM is not sandboxed, so a copy of the app run for testing edits the
+    /// **same** notes as the installed one — "it's only a copy" protects nothing.
+    /// Worse, the roots used to be computed in two places (here and in
+    /// `NoteStore.init`), so redirecting one of them looked like it worked while
+    /// the app kept writing to `~/Documents/NoteM` through the other. Measured
+    /// on 2026-08-10: three empty notes appeared in the real store during a test
+    /// that was believed to be isolated.
+    ///
+    /// Now every root comes from here, and here alone. To redirect, pass a launch
+    /// argument (works through `open`, which carries no environment):
+    ///
+    ///     open NoteM.app --args -NoteMStoreRoot /tmp/test/NoteM -NoteMVaultRoot /tmp/test/Vault
+    ///
+    /// or set `NOTEM_STORE_ROOT` / `NOTEM_VAULT_ROOT` when launching from a shell.
+    private static func overriddenRoot(defaultsKey: String, environmentKey: String) -> URL? {
+        if let path = UserDefaults.standard.string(forKey: defaultsKey), !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        if let path = ProcessInfo.processInfo.environment[environmentKey], !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        if isRunningTests {
+            return testRoot.appendingPathComponent(defaultsKey, isDirectory: true)
+        }
+        return nil
+    }
+
+    /// True when this process is the host application of an `xcodebuild test` run.
+    ///
+    /// `xcodebuild test` launches the real app to host the test bundle, and that
+    /// app starts normally: it reads the store and rewrites `semantic_index.json`
+    /// in it. The unit tests themselves use a throwaway store, but the host does
+    /// not — so a plain test run was touching the user's actual notes. Neither an
+    /// environment variable nor a launch argument fixes it from the outside,
+    /// because the host is launched by Xcode, not by the shell.
+    ///
+    /// `XCTestConfigurationFilePath` is set by the test runner inside the host
+    /// process, which makes it the one signal available from in here.
+    private static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
+    /// Scratch location used while hosting tests. Per-process, so parallel runs
+    /// don't collide, and swept up by the system with the rest of the temp dir.
+    private static let testRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("NoteM-testy-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    /// `~/Documents/NoteM/`, unless redirected — see `overriddenRoot`.
+    ///
+    /// The single source of truth for the local root: `NoteStore` takes its
+    /// default from here rather than computing the same path again.
     static var localRoot: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("NoteM", isDirectory: true)
+        overriddenRoot(defaultsKey: "NoteMStoreRoot", environmentKey: "NOTEM_STORE_ROOT")
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("NoteM", isDirectory: true)
     }
 
     /// iCloud Drive's user-visible folder (`~/Library/Mobile Documents/…/NoteM`),
     /// or `nil` if iCloud Drive isn't set up on this Mac.
+    ///
+    /// A redirect applies here too — otherwise turning sync on inside a test copy
+    /// would reach straight back into the real iCloud Drive.
     static var iCloudRoot: URL? {
+        if let redirected = overriddenRoot(defaultsKey: "NoteMStoreRoot", environmentKey: "NOTEM_STORE_ROOT") {
+            return redirected.deletingLastPathComponent().appendingPathComponent("NoteM-iCloud", isDirectory: true)
+        }
         let base = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         guard FileManager.default.fileExists(atPath: base.path) else { return nil }
         return base.appendingPathComponent("NoteM", isDirectory: true)
+    }
+
+    /// Root of the Obsidian vault that receives exported notes, unless redirected.
+    static var vaultRoot: URL {
+        overriddenRoot(defaultsKey: "NoteMVaultRoot", environmentKey: "NOTEM_VAULT_ROOT")
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(
+                    "Library/Mobile Documents/iCloud~md~obsidian/Documents/ObsidianVault",
+                    isDirectory: true
+                )
     }
 
     /// The root to use for the given sync preference; falls back to local when

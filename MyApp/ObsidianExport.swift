@@ -15,12 +15,10 @@ import SwiftUI
 enum ObsidianExport {
 
     /// Root of the Obsidian vault.
-    private static let vaultRoot =
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Mobile Documents/iCloud~md~obsidian/Documents/ObsidianVault",
-                isDirectory: true
-            )
+    ///
+    /// Taken from `StorageLocation`, so a test build redirected away from the
+    /// real data cannot mirror notes into the actual vault in iCloud.
+    private static var vaultRoot: URL { StorageLocation.vaultRoot }
 
     /// Name of the folder at the vault root that receives NoteM's notes.
     /// The emoji is part of the folder name in the vault — the vault moved to
