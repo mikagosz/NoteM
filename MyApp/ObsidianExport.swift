@@ -322,7 +322,18 @@ enum ObsidianExport {
 
         // A stable suffix — the same note always gets the same name.
         let suffixed = base + "-" + noteID.uuidString.prefix(8).lowercased() + ".md"
-        return suffixed
+        if isFree(folder.appendingPathComponent(suffixed), noteID: noteID) { return suffixed }
+
+        // Reached only if the user happens to have a file named exactly like a
+        // note's title plus that id fragment. Unlikely, but the invariant this
+        // file opens with — never touch a file that isn't ours — does not come
+        // with an "unless it seemed unlikely" clause. Count until free.
+        var counter = 2
+        while true {
+            let numbered = base + "-" + noteID.uuidString.prefix(8).lowercased() + "-\(counter).md"
+            if isFree(folder.appendingPathComponent(numbered), noteID: noteID) { return numbered }
+            counter += 1
+        }
     }
 
     /// Whether this address is writable: empty, or our own file for this note.

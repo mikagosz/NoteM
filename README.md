@@ -172,6 +172,22 @@ Accessibility is what lets an app see keyboard events while another app is in fr
 that's the only reason NoteM asks for it, and the handler ignores every key except
 ⌥⌘N (`QuickCapture.swift`). Keystrokes are neither recorded nor stored.
 
+### Uninstalling
+
+Deleting the app leaves your notes where they are — which is the point, but it is
+worth knowing what is still on disk afterwards:
+
+| What | Where |
+|---|---|
+| Your notes | `~/Documents/NoteM/` — one folder per note, plus `.trash/` and `.history/` |
+| The same notes, if sync was on | `~/Library/Mobile Documents/com~apple~CloudDocs/NoteM/` |
+| Copies exported to Obsidian | inside your vault, wherever you pointed the bridge |
+| Settings | `~/Library/Preferences/com.mikagosz.NoteM.plist` |
+| Accessibility / microphone grants | System Settings → Privacy & Security |
+
+Nothing else is written anywhere. Removing the folders above removes every trace;
+none of it is needed by anything but NoteM.
+
 ## Building
 
 ```bash

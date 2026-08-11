@@ -6,8 +6,12 @@
 	     Runtime is on in Release; without it the mic is denied. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<!-- Files the user picks in an open panel (attachments). Inert while the app
-	     is not sandboxed, kept so turning the sandbox on doesn't silently lose it. -->
+	<!-- Files the user picks in an open panel (attachments). Inert: the app is not
+	     sandboxed (ENABLE_APP_SANDBOX = NO), so nothing consults this today.
+	     Kept rather than removed, but do not read it as "the sandbox is one switch
+	     away" — read-only would not cover writing the notes themselves, so turning
+	     the sandbox on needs this entitlement widened and the store moved into the
+	     container. Audit note P3-04, 2026-08-11. -->
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 </dict>

@@ -79,6 +79,15 @@ final class VoiceDictation {
             started = await startLegacy(identifier: "en-US")
         }
         if started {
+            // The user may have pressed the microphone again while the model was
+            // being fetched — `stop()` accepts that now, and it set the phase back
+            // to idle. Coming up as `.listening` here would leave a live engine
+            // running after an explicit stop, which is the worst possible outcome
+            // for a microphone.
+            guard phase == .preparing else {
+                await tearDownEngine()
+                return false
+            }
             phase = .listening
             startedAt = Date()
         } else {
@@ -90,8 +99,25 @@ final class VoiceDictation {
     }
 
     /// Stops listening and waits for the last pending fragment to finalize.
+    ///
+    /// `.preparing` counts as stoppable. The first run downloads a model, which
+    /// takes long enough that the user will press the microphone again — and while
+    /// this guard said `.listening` only, that press did nothing and the button
+    /// looked broken. Tearing down whatever `start()` has managed to set up so far
+    /// is safe: every field below is optional and cleared either way.
     func stop() async {
-        guard phase == .listening else { return }
+        guard phase != .idle else { return }
+        // Set before the awaits below, not after: a `start()` still waiting on the
+        // model download resumes on this actor and asks whether the phase is still
+        // `.preparing` before it switches anything on.
+        phase = .idle
+        startedAt = nil
+        await tearDownEngine()
+    }
+
+    /// Releases the audio engine and the recognizer, whatever `start()` managed to
+    /// set up. Every field is optional, so this is safe at any point of the start.
+    private func tearDownEngine() async {
         stopEngine?()
         stopEngine = nil
         await finishAnalysis?()
@@ -103,8 +129,6 @@ final class VoiceDictation {
         // in a note whose text has since moved on. Cancel it instead.
         legacyTask?.cancel()
         legacyTask = nil
-        phase = .idle
-        startedAt = nil
     }
 
     /// Full text of the session so far (finalized + tentative tail).

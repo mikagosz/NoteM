@@ -19,6 +19,11 @@ actor SemanticIndex {
     private var entries: [UUID: Entry] = [:]
     private var indexURL: URL?
     private var dirty = false
+
+    /// How many notes the index currently holds vectors for. Exists for the tests:
+    /// the vectors themselves can only be produced by the embedding model, which
+    /// is not present on every Mac, so what a test can check is how many there are.
+    var entryCount: Int { entries.count }
     /// Loaded lazily on first use; `nil` after a failed load means the model
     /// isn't available on this Mac — semantic search then silently disables.
     private var model: NLContextualEmbedding?
@@ -34,6 +39,12 @@ actor SemanticIndex {
     /// vectors. Safe to call again when the store root moves.
     func configure(indexURL: URL) {
         self.indexURL = indexURL
+        // Dropped first, not only on a successful load: after a storage switch the
+        // new root usually has no cache yet, and keeping the old vectors would let
+        // "search by meaning" answer with notes from the store the user just left —
+        // until the next `reindex` happened to overwrite them.
+        entries = [:]
+        dirty = false
         guard let data = try? Data(contentsOf: indexURL),
               let decoded = try? JSONDecoder().decode([UUID: Entry].self, from: data) else { return }
         entries = decoded

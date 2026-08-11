@@ -113,6 +113,61 @@ struct ObsidianExportTests {
         #expect(read(foreign) == "moja własna notatka")
     }
 
+    /// The same rule, one step further in. When the plain title is taken, the
+    /// export falls back to `<title>-<id fragment>.md` — and that name used to be
+    /// returned without asking who owns it, so a file the user happened to name
+    /// that way would be overwritten. The invariant has no "unlikely" clause.
+    @Test func exportDoesNotOverwriteAForeignFileSittingOnTheSuffixedName() throws {
+        let (vault, noteFolder) = makeVault()
+        try FileManager.default.createDirectory(
+            at: vault.appendingPathComponent("Praca"), withIntermediateDirectories: true
+        )
+        let note = Note(title: "Zakupy", folderPath: "Praca/x")
+        let suffix = note.id.uuidString.prefix(8).lowercased()
+
+        // Both the plain name and the suffixed one are taken by somebody else.
+        let plain = vault.appendingPathComponent("Praca/Zakupy.md")
+        let suffixed = vault.appendingPathComponent("Praca/Zakupy-\(suffix).md")
+        try Data("cudza pierwsza".utf8).write(to: plain)
+        try Data("cudza druga".utf8).write(to: suffixed)
+
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "z NoteM", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+
+        #expect(outcome.relativePath != "Praca/Zakupy.md")
+        #expect(outcome.relativePath != "Praca/Zakupy-\(suffix).md")
+        #expect(read(plain) == "cudza pierwsza")
+        #expect(read(suffixed) == "cudza druga")
+        // …and the note did land somewhere, rather than being dropped.
+        #expect(read(vault.appendingPathComponent(outcome.relativePath)).contains("z NoteM"))
+    }
+
+    /// A second export of the same note must reuse its own file rather than pile
+    /// up numbered copies — the ownership check is what makes the suffixed name
+    /// stable, and counting past a name we own would break that.
+    @Test func theSuffixedNameIsReusedByItsOwnNote() throws {
+        let (vault, noteFolder) = makeVault()
+        try FileManager.default.createDirectory(
+            at: vault.appendingPathComponent("Praca"), withIntermediateDirectories: true
+        )
+        try Data("cudza".utf8).write(to: vault.appendingPathComponent("Praca/Zakupy.md"))
+
+        let note = Note(title: "Zakupy", folderPath: "Praca/x")
+        let first = try ObsidianExport.export(
+            note: note, markdown: "wersja 1", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+        let second = try ObsidianExport.export(
+            note: note, markdown: "wersja 2", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: first.relativePath
+        )
+
+        #expect(second.relativePath == first.relativePath)
+        #expect(read(vault.appendingPathComponent(second.relativePath)).contains("wersja 2"))
+    }
+
     @Test func retitlingCleansUpThePreviousCopy() throws {
         let (vault, noteFolder) = makeVault()
         var note = Note(title: "Stary tytuł", folderPath: "Praca/x")
