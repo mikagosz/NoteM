@@ -34,6 +34,21 @@ final class NotesModel {
     /// instead of reading every note's content back off the disk.
     @ObservationIgnored private var attachmentsByNote: [UUID: [AttachmentRef]] = [:]
 
+    /// The `modified` each note carried when its refs above were read. A reload
+    /// goes back to disk only where this no longer matches.
+    ///
+    /// Sound because everything a ref holds — the note's links and its title —
+    /// can only change through `save`, which bumps `modified`; tags and the pin
+    /// don't appear in a ref at all. A note edited on the other Mac arrives with
+    /// a different `modified` too, so it is re-read like any other change.
+    ///
+    /// One limit, shared with the snippet index in `ContentView`: `meta.json`
+    /// stores `modified` to the second (measured: `.262119` comes back as `.0`),
+    /// so a change written by another process inside the same second as our own
+    /// read would look unchanged. Our own saves are covered — `refreshAttachments`
+    /// re-reads the note as part of the save.
+    @ObservationIgnored private var attachmentsReadAt: [UUID: Date] = [:]
+
     /// Last failed write to disk (note text, metadata, attachment, trash move),
     /// or `nil` when everything landed. Shown as a banner so a save that didn't
     /// reach the disk can't pass unnoticed.
@@ -571,25 +586,47 @@ final class NotesModel {
 
     // MARK: - Attachments & links
 
-    /// Rebuilds the whole attachment cache by reading every note off the disk.
-    /// Only for `reload()` — a single save uses `refreshAttachments(for:)`, so
-    /// typing doesn't trigger a full scan of the notes folder every second.
+    /// Refreshes the attachment cache after a reload, reading from disk only the
+    /// notes that are new or whose `modified` moved since they were last read.
+    ///
+    /// This used to read the content of every note, every time. `reload()` is not
+    /// a rare event: with sync on, a change on the other Mac runs it every seven
+    /// seconds, and the class is `@MainActor`, so the whole library was being read
+    /// on the main thread while the user typed. At nine notes that is invisible;
+    /// at the size this program is written for it is the interface stalling on a
+    /// timer. The snippet index in `ContentView` has worked this way for a while —
+    /// this is the same trick for the attachment index.
     private func rebuildAttachments() {
-        attachmentsByNote = Dictionary(
-            uniqueKeysWithValues: notes.map { ($0.id, attachmentRefs(for: $0)) }
-        )
+        var refs: [UUID: [AttachmentRef]] = [:]
+        var stamps: [UUID: Date] = [:]
+        for note in notes {
+            if attachmentsReadAt[note.id] == note.modified, let cached = attachmentsByNote[note.id] {
+                refs[note.id] = cached
+            } else {
+                refs[note.id] = attachmentRefs(for: note)
+            }
+            stamps[note.id] = note.modified
+        }
+        // Assigned wholesale rather than merged: entries for notes that left the
+        // list are never read again (`recomposeAttachments` walks `notes`), so
+        // merging would not show anything wrong — it would just keep every note
+        // ever deleted in memory for the rest of the session.
+        attachmentsByNote = refs
+        attachmentsReadAt = stamps
         recomposeAttachments()
     }
 
     /// Rescans one note and refreshes the flat list. No other note is read.
     private func refreshAttachments(for note: Note) {
         attachmentsByNote[note.id] = attachmentRefs(for: note)
+        attachmentsReadAt[note.id] = note.modified
         recomposeAttachments()
     }
 
     /// Drops a note from the cache (trashed or permanently deleted).
     private func dropAttachments(for noteID: UUID) {
         attachmentsByNote.removeValue(forKey: noteID)
+        attachmentsReadAt.removeValue(forKey: noteID)
         recomposeAttachments()
     }
 
