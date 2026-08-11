@@ -205,7 +205,10 @@ enum ObsidianExport {
         lines.append("\(idKey): \(note.id.uuidString)")
         lines.append("tytul: " + yamlString(note.title))
         lines.append("kategoria: " + yamlString(category))
-        lines.append("tagi: [" + note.tags.map(yamlString).joined(separator: ", ") + "]")
+        // `tags` is the only key Obsidian interprets — under any other name (`tagi`)
+        // the tags stay invisible to the tag pane, to `tag:` searches and to the graph.
+        // The remaining keys are plain properties and may keep their Polish names.
+        lines.append("tags: [" + note.tags.map(yamlString).joined(separator: ", ") + "]")
         lines.append("utworzono: " + stamp(note.created))
         lines.append("zmodyfikowano: " + stamp(note.modified))
         lines.append("wyeksportowano: " + stamp(exportedAt))

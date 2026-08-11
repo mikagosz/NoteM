@@ -62,6 +62,22 @@ struct ObsidianExportTests {
         #expect(text.contains("- mleko"))
     }
 
+    /// Obsidian only reads `tags:` (or `tag:`); under any other key the tags are
+    /// invisible to the tag pane, to `tag:` searches and to the graph.
+    @Test func frontmatterUsesTheTagKeyObsidianUnderstands() throws {
+        let (vault, noteFolder) = makeVault()
+        let note = Note(title: "Zakupy", tags: ["dom", "pilne"], folderPath: "Praca/x")
+
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "- mleko", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+
+        let text = read(vault.appendingPathComponent(outcome.relativePath))
+        #expect(text.contains("\ntags: [\"dom\", \"pilne\"]\n"))
+        #expect(!text.contains("tagi:"))
+    }
+
     @Test func exportingTwiceReusesTheSameFile() throws {
         let (vault, noteFolder) = makeVault()
         let note = Note(title: "Zakupy", folderPath: "Praca/x")

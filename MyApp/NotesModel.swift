@@ -383,6 +383,7 @@ final class NotesModel {
             obsidianError = nil
             return true
         } catch {
+            Log.failure(.obsidianExport, error)
             obsidianError = error.localizedDescription
             return false
         }
