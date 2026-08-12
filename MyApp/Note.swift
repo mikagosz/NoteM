@@ -7,7 +7,9 @@ import Foundation
 /// `folderPath` and the note's textual content are *not* persisted inside
 /// `meta.json` — `folderPath` is derived from where the folder sits on disk,
 /// and the content lives in `note.md`.
-struct Note: Identifiable, Equatable {
+/// `nonisolated`: a value type carrying no behaviour, decoded off the main
+/// thread by `NoteStore.loadAllNotes()`.
+nonisolated struct Note: Identifiable, Equatable {
     let id: UUID
     var title: String
     /// Optional manual prefix / number for the note.
@@ -76,7 +78,27 @@ struct Note: Identifiable, Equatable {
 ///
 /// Deliberately excludes `folderPath` (reconstructed from the on-disk location)
 /// and the note's content (stored in `note.md`).
-struct NoteMeta: Codable {
+nonisolated extension Array where Element == Note {
+    /// Changes whenever a note is added, removed, **or edited**.
+    ///
+    /// The Start page used to refresh its previews on `notes.count`, so editing a
+    /// note without changing how many there are left the old snippet on screen
+    /// until the user navigated away and back (E3-P3-02). Hashing ids and
+    /// modification dates is the cheap half of the answer; the expensive half —
+    /// re-reading files — is still skipped per note by comparing `modified`.
+    var changeStamp: Int {
+        var hasher = Hasher()
+        for note in self {
+            hasher.combine(note.id)
+            hasher.combine(note.modified)
+        }
+        return hasher.finalize()
+    }
+}
+
+/// `nonisolated` for the same reason as `Note`: `meta.json` is decoded on a
+/// background thread during the first read of the store.
+nonisolated struct NoteMeta: Codable {
     let id: UUID
     var title: String
     var number: String?
@@ -121,7 +143,11 @@ extension Note {
 
     /// Reconstructs a full `Note` from its metadata plus the folder path it was
     /// found at (relative to the store root).
-    init(meta: NoteMeta, folderPath: String) {
+    ///
+    /// `nonisolated` explicitly: this one lives in an extension, and an extension
+    /// does not inherit the `nonisolated` on the type — it is called from the
+    /// background read in `NoteStore.readAllNotes`.
+    nonisolated init(meta: NoteMeta, folderPath: String) {
         self.init(
             id: meta.id,
             title: meta.title,

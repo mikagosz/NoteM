@@ -119,21 +119,38 @@ extension View {
 /// Switches every `NSScrollView` in all windows (including `List`s) to the thin
 /// overlay scroller, regardless of the system "Show scroll bars" setting.
 @MainActor func applyOverlayScrollersToAllWindows() {
+    for window in NSApp.windows { applyThinScrollers(in: window) }
+}
+
+/// Same, for a single window.
+///
+/// Almost every caller knows which window it means — the one that resized, the
+/// one that is key — and walking only that one is the whole point: the watcher
+/// below used to walk the view tree of **every** open window on every step of a
+/// resize drag, and once per sidebar badge change (E3-P2-03).
+@MainActor func applyThinScrollers(in window: NSWindow?) {
     func walk(_ view: NSView?) {
         guard let view else { return }
         if let scroll = view as? NSScrollView { applyThinScroller(to: scroll) }
         view.subviews.forEach(walk)
     }
-    for window in NSApp.windows { walk(window.contentView) }
+    walk(window?.contentView)
 }
 
 /// Keeps the thin scrollers applied whenever a window becomes key or is resized.
 ///
-/// The observers watch *all* windows (`object: nil`) and each pass walks the
-/// whole view tree of every window, so one registration is enough for the entire
-/// app. `ContentView.onAppear` runs once per window (⌘N opens another), which is
-/// why `start()` has to be idempotent: a second set of observers would mean a
-/// second full tree walk on every resize step.
+/// The observers watch *all* windows (`object: nil`), so one registration covers
+/// the app, but each pass now walks **only the window that sent the
+/// notification** — see `applyThinScrollers(in:)`. `ContentView.onAppear` runs
+/// once per window (⌘N opens another), which is why `start()` has to be
+/// idempotent: a second set of observers would mean doing all of this twice.
+///
+/// While a window is being dragged bigger, `didResize` arrives continuously;
+/// those passes are skipped and `didEndLiveResize` does the work once, at the
+/// end. Nothing about the look changes — the scrollers stay the invisible
+/// `ThinScroller` (and 1 pt `StartColumnScroller` on the Start page) throughout,
+/// because a live resize does not replace the scroller objects, it only relays
+/// out the scroll view that already has them.
 @MainActor
 final class OverlayScrollerWatcher {
     static let shared = OverlayScrollerWatcher()
@@ -145,8 +162,13 @@ final class OverlayScrollerWatcher {
         for name in [NSWindow.didBecomeKeyNotification,
                      NSWindow.didResizeNotification,
                      NSWindow.didEndLiveResizeNotification] {
-            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                Task { @MainActor in applyOverlayScrollersToAllWindows() }
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { note in
+                let window = note.object as? NSWindow
+                Task { @MainActor in
+                    // Mid-drag: the end-of-resize notification will cover it.
+                    if name == NSWindow.didResizeNotification, window?.inLiveResize == true { return }
+                    applyThinScrollers(in: window)
+                }
             }
             tokens.append(token)
         }
@@ -184,7 +206,10 @@ extension Date {
 
 @main struct MyApp: App {
     @State private var settings = AppSettings()
-    @State private var model = NotesModel()
+    /// Built empty: the store is read by `ContentView.onAppear` on a background
+    /// thread, so the window is on screen while the notes are still being loaded
+    /// (second half of P2-05). The tests keep the loading initializer.
+    @State private var model = NotesModel(loadNow: false)
 
     var body: some Scene {
         WindowGroup {
@@ -212,10 +237,18 @@ struct SettingsView: View {
     var body: some View {
         TabView(selection: $pane) {
             ForEach(SettingsPane.allCases, id: \.self) { p in
-                pageContent(for: p)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .tabItem { Label(p.title(settings), systemImage: p.icon) }
-                    .tag(p)
+                // Each pane scrolls inside the fixed window. Without this the
+                // window's 700×540 was a hard ceiling: with the system text size
+                // turned up, the bottom of a pane — including its buttons — had
+                // nowhere to go and simply could not be reached (E3-P3-04).
+                ScrollView {
+                    pageContent(for: p)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .thinScrollers()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .tabItem { Label(p.title(settings), systemImage: p.icon) }
+                .tag(p)
             }
         }
         // 540, not 460: the tab bar eats part of the window height, and the panes
@@ -500,6 +533,34 @@ struct ContentView: View {
         return false
     }
 
+    /// Note count per smart folder, evaluated once per sidebar update.
+    ///
+    /// Smart folders are predicates, so the folders × notes product is inherent
+    /// here — what this removes is repeating it for every row redraw.
+    private var smartFolderCounts: [UUID: Int] {
+        var counts: [UUID: Int] = [:]
+        for folder in settings.allSmartFolders {
+            counts[folder.id] = model.notes.count(where: { folder.matches($0) })
+        }
+        return counts
+    }
+
+    /// Re-applies the thin scrollers shortly after an update that makes SwiftUI
+    /// rebuild a `List` (which resets its scroller to the thick system style).
+    ///
+    /// Scoped to the window the user is working in. A `nil` key window means the
+    /// change came from somewhere else — a quick-capture panel creating a note,
+    /// a sync poll — and only then is it worth touching every window.
+    private func rethinScrollers() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            if let key = NSApp.keyWindow {
+                applyThinScrollers(in: key)
+            } else {
+                applyOverlayScrollersToAllWindows()
+            }
+        }
+    }
+
     private var filteredNotes: [Note] {
         switch noteFilter {
         case .none:
@@ -591,7 +652,7 @@ struct ContentView: View {
                 if !settings.allSmartFolders.isEmpty {
                     Section {
                         ForEach(settings.allSmartFolders) { sf in
-                            let count = model.notes.filter { sf.matches($0) }.count
+                            let count = smartFolderCounts[sf.id] ?? 0
                             FolderFilterRow(
                                 label: sf.displayName(settings),
                                 icon: sf.icon,
@@ -611,7 +672,7 @@ struct ContentView: View {
                 if !model.categories.isEmpty {
                     Section {
                         ForEach(model.categories, id: \.self) { folder in
-                            let count = model.notes.filter { model.category(of: $0) == folder }.count
+                            let count = model.categoryCounts[folder] ?? 0
                             let tint = model.categoryColors[folder].flatMap { AppTheme.color(id: $0) }
                             FolderFilterRow(
                                 label: folder,
@@ -722,6 +783,12 @@ struct ContentView: View {
                      URL(fileURLWithPath: settings.obsidianVaultPath))
                 }
                 model.switchStorage(syncEnabled: settings.syncEnabled, moveExisting: false)
+                // First read of the store, on a background thread — the model was
+                // built empty on purpose. Skipped when the line above already had
+                // to switch roots, because that path loads synchronously.
+                if model.notes.isEmpty {
+                    Task { await model.reloadInBackground() }
+                }
                 QuickCaptureManager.shared.start(model: model, settings: settings)
                 SyncManager.shared.start(model: model, settings: settings)
                 // Nothing unwritten may die with the process: the editor autosave
@@ -744,21 +811,13 @@ struct ContentView: View {
             }
             // Selecting/deselecting a folder rebuilds the notes list, which resets
             // its scroller back to the (thick) system style — re-thin it right after.
-            .onChange(of: noteFilter) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
-            }
-            .onChange(of: selection) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
-            }
+            .onChange(of: noteFilter) { rethinScrollers() }
+            .onChange(of: selection) { rethinScrollers() }
             // Sidebar badge counts (task count, note count) change when a note is
             // flagged/created/deleted, which likewise resets the sidebar List's
             // scroller and briefly insets the trailing numbers — re-thin it too.
-            .onChange(of: model.activeTaskCount) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
-            }
-            .onChange(of: model.notes.count) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { applyOverlayScrollersToAllWindows() }
-            }
+            .onChange(of: model.activeTaskCount) { rethinScrollers() }
+            .onChange(of: model.notes.count) { rethinScrollers() }
             .sheet(isPresented: $showConflicts) {
                 ConflictResolverView(model: model) { showConflicts = false }
             }
@@ -1743,7 +1802,10 @@ private struct AttachmentRow: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if ref.kind == .image, let fileURL, let nsImage = NSImage(contentsOf: fileURL) {
+        // Thumbnail, not the whole photo: `NSImage(contentsOf:)` decoded the full
+        // image on every redraw of this row just to fill 32×32 (E3-P2-02).
+        if ref.kind == .image, let fileURL,
+           let nsImage = ThumbnailCache.shared.thumbnail(for: fileURL, side: 32) {
             Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
@@ -1803,13 +1865,16 @@ struct StartView: View {
     /// The `modified` stamp each cached entry was read at, so a rebuild only
     /// touches notes that actually changed instead of the whole notes folder.
     @State private var indexedAt: [UUID: Date] = [:]
+    /// Title, tags and content of each note as one case- and diacritic-folded
+    /// string — folded when the note changes, not when a key is pressed.
+    @State private var searchIndex: [UUID: String] = [:]
     /// In the stacks layout: which stack (bucket title) is opened, if any.
     @State private var openedStack: String?
 
     private let columns = [GridItem(.adaptive(minimum: 220), spacing: 14)]
 
     private var results: [Note] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = SearchText.fold(query.trimmingCharacters(in: .whitespaces))
         guard !q.isEmpty else { return model.notes }
         if semanticMode {
             let byID = Dictionary(uniqueKeysWithValues: model.notes.map { ($0.id, $0) })
@@ -1817,10 +1882,16 @@ struct StartView: View {
             // Empty ⇒ model unavailable or still computing — fall back to exact.
             if !ranked.isEmpty { return ranked }
         }
+        // One folded haystack per note, prepared in `buildIndex`. A note missing
+        // from the index (added since the last rebuild) is matched on its title
+        // and tags alone rather than dropped — a fresh note must be findable
+        // before its content has been read.
         return model.notes.filter { note in
-            note.title.lowercased().contains(q)
-                || note.tags.contains { $0.lowercased().contains(q) }
-                || (contentIndex[note.id]?.lowercased().contains(q) ?? false)
+            if let haystack = searchIndex[note.id] {
+                return SearchText.folded(haystack, contains: q)
+            }
+            return SearchText.folded(SearchText.fold(note.title), contains: q)
+                || note.tags.contains { SearchText.folded(SearchText.fold($0), contains: q) }
         }
     }
 
@@ -1873,7 +1944,9 @@ struct StartView: View {
         }
         .navigationTitle(settings.t("Start", "Start"))
         .onAppear { buildIndex() }
-        .onChange(of: model.notes.count) { buildIndex() }
+        // Identity *and* modification date: on the count alone, editing a note
+        // left this page showing the previous preview (E3-P3-02).
+        .onChange(of: model.notes.changeStamp) { buildIndex() }
         // Recompute the semantic ranking as the query / mode changes; the short
         // sleep debounces typing so the model isn't queried per keystroke.
         .task(id: "\(semanticMode)|\(query)") {
@@ -2035,16 +2108,24 @@ struct StartView: View {
     private func buildIndex() {
         var index: [UUID: String] = [:]
         var stamps: [UUID: Date] = [:]
+        var haystacks: [UUID: String] = [:]
         for note in model.notes {
             if indexedAt[note.id] == note.modified, let cached = contentIndex[note.id] {
                 index[note.id] = cached
+                // The folded haystack is keyed by the same stamp, so an unchanged
+                // note keeps it instead of folding its whole text again.
+                haystacks[note.id] = searchIndex[note.id]
+                    ?? SearchText.haystack(title: note.title, tags: note.tags, content: cached)
             } else {
-                index[note.id] = model.content(for: note)
+                let content = model.content(for: note)
+                index[note.id] = content
+                haystacks[note.id] = SearchText.haystack(title: note.title, tags: note.tags, content: content)
             }
             stamps[note.id] = note.modified
         }
         contentIndex = index
         indexedAt = stamps
+        searchIndex = haystacks
 
         // Refresh semantic vectors in the background; the index skips notes
         // whose content hash hasn't changed, so this is cheap when idle.
@@ -2120,17 +2201,17 @@ struct NoteCard: View {
         let flat = snippet
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Search `flat` itself, case-insensitively, so the index we get back
-        // belongs to the string we then slice. Measuring on `flat.lowercased()`
-        // and indexing `flat` drifts apart for any character whose length changes
-        // with case, and an offset past the end kills the process.
+        // `FoldedText` searches the folded copy and hands back offsets in `flat`
+        // itself, so the index we slice always belongs to the string we slice.
+        // Measuring on a separately folded string and indexing the original
+        // drifts apart for any character whose length changes, and an offset past
+        // the end kills the process.
         guard !trimmedQuery.isEmpty,
-              let match = flat.range(of: trimmedQuery, options: [.caseInsensitive, .diacriticInsensitive])
+              let match = FoldedText(flat).matches(ofFolded: SearchText.fold(trimmedQuery)).first
         else {
             return String(flat.prefix(160))
         }
-        let startOffset = flat.distance(from: flat.startIndex, to: match.lowerBound)
-        let from = max(0, startOffset - 40)
+        let from = max(0, match.lowerBound - 40)
         let start = flat.index(flat.startIndex, offsetBy: from)
         let window = String(flat[start...].prefix(200))
         return (from > 0 ? "…" : "") + window
@@ -2199,11 +2280,20 @@ struct NoteCard: View {
         var attr = AttributedString(text)
         let q = trimmedQuery
         guard !q.isEmpty else { return attr }
-        var searchRange = attr.startIndex..<attr.endIndex
-        while let range = attr[searchRange].range(of: q, options: .caseInsensitive) {
-            attr[range].foregroundColor = accent
-            attr[range].inlinePresentationIntent = .stronglyEmphasized
-            searchRange = range.upperBound..<attr.endIndex
+        // The same matcher the filter and the fragment picker use. Highlighting
+        // used to run with `.caseInsensitive` alone, so a note found by the other
+        // two could show its fragment with nothing marked in it (E3-P3-01).
+        let characters = attr.characters
+        let total = characters.count
+        for match in FoldedText(text).matches(ofFolded: SearchText.fold(q)) {
+            // Offsets come from the same string this AttributedString was built
+            // from, but clamp anyway: an index past the end is a crash, not a
+            // cosmetic slip.
+            guard match.lowerBound >= 0, match.upperBound <= total else { continue }
+            let lower = characters.index(characters.startIndex, offsetBy: match.lowerBound)
+            let upper = characters.index(characters.startIndex, offsetBy: match.upperBound)
+            attr[lower..<upper].foregroundColor = accent
+            attr[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
         }
         return attr
     }

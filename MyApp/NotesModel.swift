@@ -112,10 +112,16 @@ final class NotesModel {
     /// and the only production caller is a property initializer in `MyApp`, which
     /// is outside any actor — so building a main-actor-isolated `NoteStore` there
     /// was a warning under Swift 5 and would be an error under Swift 6.
-    init(store: NoteStore? = nil) {
+    /// - Parameter loadNow: read the whole store before returning. `true` for the
+    ///   tests, which then assert on `notes` straight after building the model.
+    ///   The app passes `false` and awaits `reloadInBackground()` from
+    ///   `ContentView.onAppear` instead: reading 500 notes takes ~0,3 s and this
+    ///   initializer runs while the first window is being built, so those tenths
+    ///   were spent with nothing on screen (second half of P2-05).
+    init(store: NoteStore? = nil, loadNow: Bool = true) {
         self.store = store ?? NoteStore()
         connectStoreErrors()
-        reload()
+        if loadNow { reload() }
         configureSemanticIndex()
     }
 
@@ -155,8 +161,32 @@ final class NotesModel {
     /// sync conflicts (the same note id sitting in more than one folder).
     func reload() {
         store.emptyTrash(olderThanDays: trashRetentionProvider())
+        apply(live: store.loadAllNotes(), trashed: store.loadTrashedNotes())
+    }
 
-        let raw = store.loadAllNotes()
+    /// `reload()` with the two directory walks off the main thread.
+    ///
+    /// Only the reads move: expiring the trash stays here because it *writes*, and
+    /// a throwaway store built in the background carries none of the error
+    /// callbacks that report a failed write to the user.
+    ///
+    /// The background side calls `NoteStore`'s `nonisolated` read statics rather
+    /// than borrowing this store — a store is not `Sendable`, and handing the live
+    /// one to another thread is how two threads end up writing one file. Only the
+    /// decoded notes come back, and `Note` is a value type.
+    func reloadInBackground() async {
+        store.emptyTrash(olderThanDays: trashRetentionProvider())
+        let root = store.rootURL
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (live: [Note], trashed: [Note]) in
+            (NoteStore.readAllNotes(root: root), NoteStore.readTrashedNotes(root: root))
+        }.value
+        apply(live: loaded.live, trashed: loaded.trashed)
+    }
+
+    /// Everything `reload()` does once the notes are in memory. Shared with
+    /// `reloadInBackground()` so the two cannot drift apart — the lesson from
+    /// `StorageLocation` and from `Loc`: two copies of one rule stop matching.
+    private func apply(live raw: [Note], trashed rawTrashed: [Note]) {
         let grouped = Dictionary(grouping: raw, by: \.id)
         conflicts = grouped
             .filter { $0.value.count > 1 }
@@ -167,7 +197,7 @@ final class NotesModel {
             .compactMap { $0.max(by: { $0.modified < $1.modified }) }
             .sorted(by: Self.pinnedThenModified)
 
-        trashedNotes = store.loadTrashedNotes()
+        trashedNotes = rawTrashed
             .sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
 
         var colors: [String: String] = [:]
@@ -183,6 +213,20 @@ final class NotesModel {
     }
 
     // MARK: - Category cover colour
+
+    /// How many notes sit in each category folder, from **one** pass.
+    ///
+    /// The sidebar badge used to be `notes.filter { category(of: $0) == folder }`
+    /// evaluated inside the row, i.e. folders × notes on every sidebar update
+    /// (E3-P3-03). A note belongs to exactly one category, so one pass answers it
+    /// for every folder at once.
+    var categoryCounts: [String: Int] {
+        var counts: [String: Int] = [:]
+        for note in notes {
+            counts[category(of: note), default: 0] += 1
+        }
+        return counts
+    }
 
     /// The category (parent folder path) a note lives in, e.g. "Praca".
     func category(of note: Note) -> String {

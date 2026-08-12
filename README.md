@@ -224,8 +224,8 @@ save-on-quit path — the places where a bug costs you data rather than pixels.
 | Storage | `NoteStore.swift`, `Note.swift`, `NotesModel.swift` |
 | Editor | `RichTextEditor.swift`, `MarkdownStyler.swift`, `EditorToolbar.swift`, `PasteSanitizer.swift` |
 | Views | `ContentView.swift`, `NoteDetailView.swift` |
-| Organising | `Categorization.swift`, `SmartFolder.swift`, `Attachment.swift` |
-| Search | `SemanticIndex.swift`, `CommandPalette.swift` |
+| Organising | `Categorization.swift`, `SmartFolder.swift`, `Attachment.swift`, `Thumbnails.swift` |
+| Search | `SearchText.swift`, `SemanticIndex.swift`, `CommandPalette.swift` |
 | Input | `VoiceNotes.swift`, `DrawingEditor.swift`, `QuickCapture.swift` |
 | Export | `ObsidianExport.swift`, `HTMLExport.swift` |
 | Sync | `Sync.swift` |

@@ -6,7 +6,9 @@ import Foundation
 /// settings yet). Each note is a folder containing `note.md` and `meta.json`.
 final class NoteStore {
     /// Names of the files stored inside every note folder.
-    private enum FileName {
+    /// `nonisolated`: the read paths run off the main thread and these are
+    /// immutable strings.
+    nonisolated private enum FileName {
         static let content = "note.md"
         /// Full-fidelity archive of the note's attributed string (colours, fonts,
         /// pasted formatting, inline images). The source of truth for display;
@@ -19,7 +21,7 @@ final class NoteStore {
     private static let categoryMetaFile = ".category.json"
 
     /// Reserved top-level directories under the store root.
-    static let trashDir = ".trash"
+    nonisolated static let trashDir = ".trash"
     static let historyDir = ".history"
     /// How many `note.md` snapshots to keep per note.
     private static let historyLimit = 20
@@ -107,36 +109,53 @@ final class NoteStore {
 
     /// Scans the store root and loads every note whose folder contains a
     /// readable `meta.json`.
-    func loadAllNotes() -> [Note] {
-        guard let enumerator = fileManager.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: nil
-        ) else {
+    func loadAllNotes() -> [Note] { Self.readAllNotes(root: rootURL) }
+
+    /// Loads notes currently sitting in `.trash/`.
+    func loadTrashedNotes() -> [Note] { Self.readTrashedNotes(root: rootURL) }
+
+    /// The two reads above, as `nonisolated` statics over a root URL.
+    ///
+    /// Static and root-parameterised so the first read of the store can happen on
+    /// a background thread (`NotesModel.reloadInBackground`) without a store
+    /// instance crossing threads — a `NoteStore` is not `Sendable`, and the whole
+    /// point of the store is that exactly one of them owns a root. The instance
+    /// methods above stay the only API the rest of the app uses, so there is one
+    /// implementation, not two that drift.
+    ///
+    /// Each call makes its own `FileManager` and `JSONDecoder`: both are cheap,
+    /// and reaching for the instance's would mean pulling main-actor state into a
+    /// background thread.
+    nonisolated static func readAllNotes(root: URL) -> [Note] {
+        let fileManager = FileManager()
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else {
             return []
         }
-
+        let decoder = makeDecoder()
         var notes: [Note] = []
         for case let fileURL as URL in enumerator where fileURL.lastPathComponent == FileName.meta {
             let folderURL = fileURL.deletingLastPathComponent()
-            let folderPath = relativePath(of: folderURL)
+            // Enumerating the root cannot produce a folder outside it, so `nil`
+            // here means a symlink pointing away — skip it rather than guess.
+            guard let folderPath = relativePath(of: folderURL, under: root) else { continue }
             // Skip the trash: those notes are surfaced via loadTrashedNotes().
-            if folderPath == Self.trashDir || folderPath.hasPrefix(Self.trashDir + "/") { continue }
+            if folderPath == trashDir || folderPath.hasPrefix(trashDir + "/") { continue }
             guard let data = try? Data(contentsOf: fileURL),
                   let meta = try? decoder.decode(NoteMeta.self, from: data) else {
                 continue
             }
             notes.append(Note(meta: meta, folderPath: folderPath))
         }
-
         return notes
     }
 
-    /// Loads notes currently sitting in `.trash/`.
-    func loadTrashedNotes() -> [Note] {
-        let trashURL = url(forFolderPath: Self.trashDir)
+    nonisolated static func readTrashedNotes(root: URL) -> [Note] {
+        let fileManager = FileManager()
+        let trashURL = root.appendingPathComponent(trashDir, isDirectory: true)
         guard let enumerator = fileManager.enumerator(at: trashURL, includingPropertiesForKeys: nil) else {
             return []
         }
+        let decoder = makeDecoder()
         var notes: [Note] = []
         for case let fileURL as URL in enumerator where fileURL.lastPathComponent == FileName.meta {
             guard let data = try? Data(contentsOf: fileURL),
@@ -144,9 +163,29 @@ final class NoteStore {
                 continue
             }
             let folderURL = fileURL.deletingLastPathComponent()
-            notes.append(Note(meta: meta, folderPath: relativePath(of: folderURL)))
+            guard let folderPath = relativePath(of: folderURL, under: root) else { continue }
+            notes.append(Note(meta: meta, folderPath: folderPath))
         }
         return notes
+    }
+
+    /// Decoder settings shared by the reads and by the instance — `meta.json`
+    /// carries ISO-8601 dates and a decoder without this reads none of them.
+    nonisolated static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    /// Path of `folderURL` relative to `root`, or `nil` when it is not under it.
+    nonisolated static func relativePath(of folderURL: URL, under root: URL) -> String? {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let folderComponents = folderURL.standardizedFileURL.pathComponents
+        guard folderComponents.count > rootComponents.count,
+              Array(folderComponents.prefix(rootComponents.count)) == rootComponents else {
+            return nil
+        }
+        return folderComponents.dropFirst(rootComponents.count).joined(separator: "/")
     }
 
     /// Overwrites `note.md` with `content` and rewrites `meta.json`, bumping
@@ -568,10 +607,7 @@ final class NoteStore {
 
     /// Path of `folderURL` relative to the store root (matches `Note.folderPath`).
     private func relativePath(of folderURL: URL) -> String {
-        let rootComponents = rootURL.standardizedFileURL.pathComponents
-        let folderComponents = folderURL.standardizedFileURL.pathComponents
-        guard folderComponents.count > rootComponents.count,
-              Array(folderComponents.prefix(rootComponents.count)) == rootComponents else {
+        guard let path = Self.relativePath(of: folderURL, under: rootURL) else {
             // Can't be expressed relative to the root, so the fallback below is a
             // guess — every later path built from it points somewhere else than
             // the note actually lives. Say so instead of failing quietly.
@@ -580,7 +616,7 @@ final class NoteStore {
                                "Note folder lies outside the store: \(folderURL.path)"))
             return folderURL.lastPathComponent
         }
-        return folderComponents.dropFirst(rootComponents.count).joined(separator: "/")
+        return path
     }
 
     /// Runs a disk write, reporting `what` through `onDataError` when it fails.

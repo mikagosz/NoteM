@@ -783,6 +783,14 @@ struct QuickCaptureView: View {
                 controller.hideFloatingPanel()
             }
             .onExitCommand { saveAndClose() }
+            // The panel is a fixed-size floating window (360×400) and its content
+            // is a text editor, so it cannot scroll the way the settings panes
+            // now do. What it can do is stop its own chrome from growing past the
+            // edge: with the system text size turned all the way up, the Save and
+            // Close buttons were pushed out of a window that has no scrollbar and
+            // no resize handle (E3-P3-04). The note's own text is drawn by
+            // `NSTextView` in the user's chosen font and is not affected.
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     /// Crystal button: saves the note and mirrors it into the vault, then closes.
