@@ -1,0 +1,18 @@
+NoteM — notice on artwork
+
+The MIT licence in LICENSE covers the SOURCE CODE of this project.
+
+It does NOT cover the application artwork:
+
+    MyApp/notem.icon/                                     (the app icon, all files inside)
+    MyApp/Assets.xcassets/ObsidianCrystal.imageset/       (in-app image)
+    MyApp/Assets.xcassets/ObsidianCrystalSent.imageset/   (in-app image)
+    docs/assets/notem-icon.png                            (icon used in the README)
+
+That artwork is Copyright (c) 2026 mikagosz, all rights reserved. It is included
+in this repository so the project builds and the README renders as shipped. It may
+not be reused, redistributed or adapted — in a fork or anywhere else — without
+written permission. If you fork this project, replace the artwork with your own.
+
+Apple's SF Symbols, where used, are drawn at runtime and are governed by Apple's
+own terms, not by this notice.

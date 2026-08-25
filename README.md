@@ -234,4 +234,11 @@ save-on-quit path — the places where a bug costs you data rather than pixels.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+The **source code** is MIT — see [LICENSE](LICENSE).
+
+The **artwork is not**. The app icon (`MyApp/notem.icon/`), the in-app images
+(`MyApp/Assets.xcassets/ObsidianCrystal*`) and the icon used above
+(`docs/assets/notem-icon.png`) are Copyright (c) 2026 mikagosz, all rights reserved, and
+are excluded from the MIT grant — see [NOTICE](NOTICE). They ship with the repository so
+the project builds and this page renders as it is shipped; if you fork this project,
+replace them with your own.
