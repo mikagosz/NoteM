@@ -17,6 +17,10 @@ dictation, drawing, and a one-way bridge into an Obsidian vault.
 
 > Interface language: Polish and English, switchable at runtime.
 
+<p align="center">
+  <img src="docs/assets/notem-hero.png" width="100%" alt="NoteM on macOS: the note list on the left, an open note with a table being inserted, and the appearance settings showing the accent colour themes">
+</p>
+
 ---
 
 ## Why another notes app
