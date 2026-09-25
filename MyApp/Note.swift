@@ -38,6 +38,9 @@ nonisolated struct Note: Identifiable, Equatable {
     /// Where the exported copy sits, relative to the vault export folder (e.g.
     /// "Praca/Zakupy.md"). Kept so a retitled note replaces its old file.
     var obsidianPath: String?
+    /// Vault-relative attachment files the last export copied in — the ONLY files
+    /// the mirror may delete later. `nil` for copies exported before 1.1.1.
+    var obsidianAttachments: [String]?
 
     init(
         id: UUID = UUID(),
@@ -54,7 +57,8 @@ nonisolated struct Note: Identifiable, Equatable {
         deletedAt: Date? = nil,
         originalFolderPath: String? = nil,
         obsidianExportedAt: Date? = nil,
-        obsidianPath: String? = nil
+        obsidianPath: String? = nil,
+        obsidianAttachments: [String]? = nil
     ) {
         self.id = id
         self.title = title
@@ -71,6 +75,7 @@ nonisolated struct Note: Identifiable, Equatable {
         self.originalFolderPath = originalFolderPath
         self.obsidianExportedAt = obsidianExportedAt
         self.obsidianPath = obsidianPath
+        self.obsidianAttachments = obsidianAttachments
     }
 }
 
@@ -118,6 +123,8 @@ nonisolated struct NoteMeta: Codable {
     /// Obsidian mirror bookkeeping; absent until the note is first exported.
     var obsidianExportedAt: Date?
     var obsidianPath: String?
+    /// Optional so older `meta.json` files still decode (missing ⇒ unknown, delete nothing).
+    var obsidianAttachments: [String]?
 }
 
 extension Note {
@@ -137,7 +144,8 @@ extension Note {
             deletedAt: deletedAt,
             originalFolderPath: originalFolderPath,
             obsidianExportedAt: obsidianExportedAt,
-            obsidianPath: obsidianPath
+            obsidianPath: obsidianPath,
+            obsidianAttachments: obsidianAttachments
         )
     }
 
@@ -163,7 +171,8 @@ extension Note {
             deletedAt: meta.deletedAt,
             originalFolderPath: meta.originalFolderPath,
             obsidianExportedAt: meta.obsidianExportedAt,
-            obsidianPath: meta.obsidianPath
+            obsidianPath: meta.obsidianPath,
+            obsidianAttachments: meta.obsidianAttachments
         )
     }
 }

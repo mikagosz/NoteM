@@ -258,14 +258,15 @@ struct ObsidianExportTests {
         try Data("b".utf8).write(to: noteFolder.appendingPathComponent("attachments/drugi.png"))
         let note = Note(title: "Sprzątanie", folderPath: "Praca/x")
 
-        _ = try ObsidianExport.export(
+        let first = try ObsidianExport.export(
             note: note, markdown: "![a](attachments/pierwszy.png)\n![b](attachments/drugi.png)",
             category: "Praca", noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
         )
         // The user removed one image from the note.
         _ = try ObsidianExport.export(
             note: note, markdown: "![a](attachments/pierwszy.png)",
-            category: "Praca", noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: "Praca/Sprzątanie.md"
+            category: "Praca", noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: "Praca/Sprzątanie.md",
+            previousAttachments: first.attachments
         )
 
         let dir = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Sprzątanie")
@@ -284,7 +285,8 @@ struct ObsidianExportTests {
             note: note, markdown: "![r](attachments/rysunek.png)", category: "Praca",
             noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
         )
-        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id)
+        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id,
+                                    ownedAttachments: outcome.attachments)
 
         #expect(!FileManager.default.fileExists(atPath: vault.appendingPathComponent(outcome.relativePath).path))
         #expect(!FileManager.default.fileExists(
@@ -322,7 +324,8 @@ struct ObsidianExportTests {
         let foreign = folder.appendingPathComponent("moje-zdjecie.png")
         try Data("cudze".utf8).write(to: foreign)
 
-        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id)
+        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id,
+                                    ownedAttachments: outcome.attachments)
 
         #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("rysunek.png").path))
         #expect(read(foreign) == "cudze")
@@ -339,5 +342,81 @@ struct ObsidianExportTests {
         // Same path, different note id — must not be touched.
         ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: UUID())
         #expect(FileManager.default.fileExists(atPath: vault.appendingPathComponent(outcome.relativePath).path))
+    }
+
+    // MARK: - Audyt SBW 2026-09-23, E1-S-P1-02: lustro kasuje tylko swoje
+
+    /// (a) Folder w sejfie o nazwie notatki, a w nim plik użytkownika. Do 1.1.0
+    /// eksport kasował wszystko, czego sam nie skopiował — także przy notatce bez
+    /// załączników.
+    @Test func exportLeavesTheUsersFileInAFolderNamedLikeTheNote() throws {
+        let (vault, noteFolder) = makeVault()
+        let folder = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Faktury")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let users = folder.appendingPathComponent("skan.pdf")
+        try Data("moje".utf8).write(to: users)
+        let note = Note(title: "Faktury", folderPath: "Praca/x")
+
+        let first = try ObsidianExport.export(
+            note: note, markdown: "bez załączników", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+        _ = try ObsidianExport.export(
+            note: note, markdown: "dalej bez", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: first.relativePath,
+            previousAttachments: first.attachments
+        )
+        #expect(read(users) == "moje")
+    }
+
+    /// (b) Osadzenie dopisane ręcznie w kopii w Obsidianie nie wchodzi na listę.
+    @Test func removeMirrorIgnoresEmbedsAddedInObsidian() throws {
+        let (vault, noteFolder) = makeVault()
+        let note = Note(title: "Edytowana", folderPath: "Praca/x")
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "treść", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+        let other = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Inne/zdjecie.png")
+        try FileManager.default.createDirectory(at: other.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("cudze".utf8).write(to: other)
+        let copy = vault.appendingPathComponent(outcome.relativePath)
+        try (read(copy) + "\n![[" + ObsidianExport.attachmentsDir + "/Inne/zdjecie.png]]\n").write(to: copy, atomically: true, encoding: .utf8)
+
+        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id,
+                                    ownedAttachments: outcome.attachments)
+        #expect(!FileManager.default.fileExists(atPath: copy.path), "kontrola: kopia notatki ma zniknąć")
+        #expect(read(other) == "cudze")
+    }
+
+    /// (c) Plik użytkownika o tej samej nazwie co załącznik nie jest nadpisywany.
+    @Test func exportDoesNotOverwriteTheUsersFileWithTheSameName() throws {
+        let (vault, noteFolder) = makeVault()
+        try Data("z notatki".utf8).write(to: noteFolder.appendingPathComponent("attachments/skan.png"))
+        let folder = vault.appendingPathComponent(ObsidianExport.attachmentsDir + "/Kolizja")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("moje".utf8).write(to: folder.appendingPathComponent("skan.png"))
+        let note = Note(title: "Kolizja", folderPath: "Praca/x")
+
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "![s](attachments/skan.png)", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+        #expect(read(folder.appendingPathComponent("skan.png")) == "moje")
+        #expect(outcome.attachments == [ObsidianExport.attachmentsDir + "/Kolizja/skan (NoteM).png"])
+        #expect(read(vault.appendingPathComponent(outcome.attachments[0])) == "z notatki")
+    }
+
+    /// (d) Kopia sprzed 1.1.1 (bez listy): usunięcie notatki nie kasuje załączników.
+    @Test func removeMirrorWithoutAListDeletesNoAttachments() throws {
+        let (vault, noteFolder) = makeVault()
+        try Data("obrazek".utf8).write(to: noteFolder.appendingPathComponent("attachments/rysunek.png"))
+        let note = Note(title: "Stara kopia", folderPath: "Praca/x")
+        let outcome = try ObsidianExport.export(
+            note: note, markdown: "![r](attachments/rysunek.png)", category: "Praca",
+            noteFolder: noteFolder, vaultFolder: vault, previousRelativePath: nil
+        )
+        ObsidianExport.removeMirror(relativePath: outcome.relativePath, vaultFolder: vault, noteID: note.id)
+        #expect(FileManager.default.fileExists(atPath: vault.appendingPathComponent(outcome.attachments[0]).path))
     }
 }

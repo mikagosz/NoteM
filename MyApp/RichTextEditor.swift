@@ -389,12 +389,42 @@ final class RichTextController: NSObject, NSTextViewDelegate {
         floatingPanel?.show(above: screenRect)
     }
 
-    /// Follow clicked wiki links (other schemes fall through to the default).
+    /// Follow clicked wiki links; `http`, `https`, `mailto` and relative targets go
+    /// to the default handling; anything else asks first.
+    ///
+    /// 🔴 Until 1.1.0 every scheme went straight to the system — `file://` launched a
+    /// file or a program, `smb://` connected Finder to somebody's server, any app's
+    /// own scheme ran whatever that app does with it — and a link keeps its target
+    /// through ⌘V, behind an innocent label. The HTML export already allowed only
+    /// these three schemes; the editor now uses the same list.
+    /// SBW audit 2026-09-23, E2-B-P2-01.
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard let url = link as? URL, let title = MarkdownStyler.wikiTitle(from: url) else { return false }
-        onOpenWikiLink?(title)
+        let url = (link as? URL) ?? (link as? String).flatMap { URL(string: $0) }
+        guard let url else { return false }
+        if let title = MarkdownStyler.wikiTitle(from: url) {
+            onOpenWikiLink?(title)
+            return true
+        }
+        guard let scheme = url.scheme?.lowercased(), !Self.linkSchemesOpenedDirectly.contains(scheme) else {
+            return false
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = Loc.t("Otworzyć ten adres?", "Open this address?")
+        alert.informativeText = Loc.t(
+            "To nie jest link do strony ani do maila — system otworzy go tak, jakby kliknąć go w Finderze (może uruchomić plik albo połączyć się z serwerem):\n\n\(url.absoluteString)",
+            "This isn't a web or mail link — the system will open it as if clicked in Finder (it can launch a file or connect to a server):\n\n\(url.absoluteString)"
+        )
+        alert.addButton(withTitle: Loc.t("Anuluj", "Cancel"))
+        alert.addButton(withTitle: Loc.t("Otwórz", "Open"))
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(url)
+        }
         return true
     }
+
+    /// Same list as the HTML export's `allowedLinkSchemes`.
+    static let linkSchemesOpenedDirectly: Set<String> = ["http", "https", "mailto"]
 
     // MARK: - List continuation on Return
 

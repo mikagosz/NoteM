@@ -84,4 +84,33 @@ struct HTMLPasteGuardTests {
         let data = Data([0xFF, 0xFE, 0x00, 0x01])
         #expect(HTMLPasteGuard.withoutRemoteResources(data) == data)
     }
+
+    // MARK: - Audyt SBW 2026-09-23, E2-B-P1-01 — adres w innej postaci niż dosłowna
+
+    /// Warianty B–F z sondy audytu. Każdy przechodził przez filtr 1.1.0 bez zmian,
+    /// bo importer najpierw dekoduje, a dopiero potem czyta adres.
+    @Test func encodedAndEscapedAddressesAreStrippedToo() {
+        let warianty = [
+            "B": #"<img src="&#104;ttp://127.0.0.1:18765/B.png">"#,
+            "C": #"<img src="http:&#47;&#47;127.0.0.1:18765/C.png">"#,
+            "D": #"<div style="background:url(&quot;http://127.0.0.1:18765/D.png&quot;)">x</div>"#,
+            "E": #"<svg><image href="http://127.0.0.1:18765/E.png"/></svg>"#,
+            "F": #"<div style="background:u\72l(http://127.0.0.1:18765/F.png)">x</div>"#,
+            "G": #"<img src="&#x68;ttp&#58;//127.0.0.1:18765/G.png">"#,
+        ]
+        for (nazwa, html) in warianty {
+            #expect(!strip(html).contains("18765"), "wariant \(nazwa) przeszedł: \(strip(html))")
+        }
+    }
+
+    /// Kontrola dodatnia: zwykłe formatowanie i tekst zostają.
+    @Test func plainStylingSurvivesTheStricterRules() {
+        let out = strip(#"<p style="color:#c00; font-weight:bold">ważne</p>"#)
+        #expect(out.contains("color:#c00"))
+        #expect(out.contains("ważne"))
+    }
+
+    @Test func aStyleBlockWithACSSEscapeGoesWhole() {
+        #expect(!strip(#"<style>p{background:u\72l(http://127.0.0.1:18765/H.png)}</style><p>x</p>"#).contains("18765"))
+    }
 }

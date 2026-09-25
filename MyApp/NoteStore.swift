@@ -111,6 +111,10 @@ final class NoteStore {
     /// readable `meta.json`.
     func loadAllNotes() -> [Note] { Self.readAllNotes(root: rootURL) }
 
+    func loadAllNotesReportingUnreadable() -> (notes: [Note], unreadable: [String]) {
+        Self.readAllNotesReportingUnreadable(root: rootURL)
+    }
+
     /// Loads notes currently sitting in `.trash/`.
     func loadTrashedNotes() -> [Note] { Self.readTrashedNotes(root: rootURL) }
 
@@ -127,12 +131,22 @@ final class NoteStore {
     /// and reaching for the instance's would mean pulling main-actor state into a
     /// background thread.
     nonisolated static func readAllNotes(root: URL) -> [Note] {
+        readAllNotesReportingUnreadable(root: root).notes
+    }
+
+    /// `readAllNotes` plus the folders whose `meta.json` could not be decoded.
+    ///
+    /// 🔴 Such a note used to vanish from the list, the trash and search without
+    /// a word — `note.md` intact on disk, and no reason for the user to go looking.
+    /// The paths go to a banner (`NotesModel.apply`). SBW audit 2026-09-23, E1-S-P2-01.
+    nonisolated static func readAllNotesReportingUnreadable(root: URL) -> (notes: [Note], unreadable: [String]) {
         let fileManager = FileManager()
         guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else {
-            return []
+            return ([], [])
         }
         let decoder = makeDecoder()
         var notes: [Note] = []
+        var unreadable: [String] = []
         for case let fileURL as URL in enumerator where fileURL.lastPathComponent == FileName.meta {
             let folderURL = fileURL.deletingLastPathComponent()
             // Enumerating the root cannot produce a folder outside it, so `nil`
@@ -142,11 +156,12 @@ final class NoteStore {
             if folderPath == trashDir || folderPath.hasPrefix(trashDir + "/") { continue }
             guard let data = try? Data(contentsOf: fileURL),
                   let meta = try? decoder.decode(NoteMeta.self, from: data) else {
+                unreadable.append(folderPath)
                 continue
             }
             notes.append(Note(meta: meta, folderPath: folderPath))
         }
-        return notes
+        return (notes, unreadable)
     }
 
     nonisolated static func readTrashedNotes(root: URL) -> [Note] {
@@ -206,8 +221,20 @@ final class NoteStore {
         // Snapshot the previous content before overwriting, as a safety net.
         snapshotContent(for: updated, from: folderURL)
         guard writeContent(content, to: folderURL) else { return nil }
-        writeRich(richData, to: folderURL)
-        writeMeta(updated.meta, to: folderURL)
+        // 🔴 Nieudany `note.rich` nie może zostać po cichu obok nowego `note.md`.
+        // Do wyświetlania wygrywa `note.rich`, więc do 1.1.0 przy pełnym dysku
+        // (archiwum z obrazkami jest dużo większe od tekstu) na dysku zostawał nowy
+        // tekst obok STAREGO archiwum, a przy następnym otwarciu edytor pokazywał treść
+        // sprzed zapisu — i pierwsze pisanie nadpisywało nią nowy `note.md`.
+        // Teraz: gdy nowego archiwum nie da się zapisać, stare znika i wyświetlanie
+        // spada na aktualny `note.md` (ta sama droga co przy `.refused`). Gdy nie da się
+        // nawet usunąć starego — zapis jest nieudany. Audyt SBW 2026-09-23, E1-S-P1-01.
+        if !writeRich(richData, to: folderURL) {
+            guard richData != nil, writeRich(nil, to: folderURL) else { return nil }
+        }
+        // `meta.json` niesie `modified` — bez niego drugi Mac nie wie, że ta wersja
+        // jest nowsza. Nieudany zapis = nieudany zapis notatki, żeby edytor ponowił.
+        guard writeMeta(updated.meta, to: folderURL) else { return nil }
         updateManifest()
 
         return updated
@@ -250,6 +277,32 @@ final class NoteStore {
         writeMeta(trashed.meta, to: destination)
         updateManifest()
         return trashed
+    }
+
+    /// Moves a losing conflict version to the trash as a note of its own.
+    ///
+    /// It gets a **fresh id** first: every version in a conflict shares one id,
+    /// and the trash keys its slots by id (`.trash/<id>`) — trashing two versions
+    /// under the same id would clear the first to make room for the second, and a
+    /// trashed note sharing the id of a live one would bring the conflict straight
+    /// back on restore. With a new id it is simply another note that can be read,
+    /// restored or emptied with the trash. If trashing fails, the version stays
+    /// where it was, now as a separate note — nothing is lost either way.
+    @discardableResult
+    func trashConflictVersion(_ version: Note) -> Note? {
+        let separate = Note(
+            title: version.title,
+            number: version.number,
+            tags: version.tags,
+            created: version.created,
+            modified: version.modified,
+            folderPath: version.folderPath,
+            links: version.links,
+            isTaskList: version.isTaskList,
+            taskDone: version.taskDone
+        )
+        guard writeMeta(separate.meta, to: url(forFolderPath: version.folderPath)) else { return nil }
+        return trashNote(separate)
     }
 
     /// Moves a trashed note back to its original location (disambiguating if

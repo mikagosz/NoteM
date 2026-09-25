@@ -216,6 +216,8 @@ final class SyncManager {
     private var pollTimer: Timer?
     /// The manifest timestamp we saw most recently (ours or another Mac's).
     private var lastManifestDate: Date?
+    /// A background reload from `poll()` is in flight — the next tick waits.
+    private var reloadRunning = false
     /// Observer token for the "we just wrote manifest locally" notification.
     private var manifestObserver: Any?
 
@@ -267,6 +269,9 @@ final class SyncManager {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 7, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.poll() }
         }
+        // Luz, który pozwala systemowi łączyć wybudzenia — co do sekundy nic tu
+        // nie musi trafiać. Audyt SBW 2026-09-23, E1-W-P3-01.
+        pollTimer?.tolerance = 1
     }
 
     /// Clears the current error and restarts the polling cycle.
@@ -295,10 +300,19 @@ final class SyncManager {
         // The model refuses to reload while an editor holds unsaved text. Leave
         // `lastManifestDate` alone so the change is still pending and the next
         // tick (7 s) picks it up — by then the 1 s autosave has long landed.
-        guard model.reloadFromExternalChange() else { return }
-
-        lastManifestDate = current
-        lastActivity = Date()
+        //
+        // The reload runs in the background now (E1-W-P2-01); one at a time, so a
+        // slow walk and the next tick don't overlap.
+        guard !reloadRunning else { return }
+        reloadRunning = true
+        Task { @MainActor [weak self] in
+            let applied = await model.reloadFromExternalChange()
+            guard let self else { return }
+            self.reloadRunning = false
+            guard applied else { return }
+            self.lastManifestDate = current
+            self.lastActivity = Date()
+        }
     }
 }
 

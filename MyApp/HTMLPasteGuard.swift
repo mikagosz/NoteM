@@ -52,13 +52,34 @@ enum HTMLPasteGuard {
         return Data(withoutRemoteResources(html).utf8)
     }
 
+    ///
+    /// > [!danger] 🔴 Match on what the IMPORTER will see, not on the raw text
+    /// > Until 1.1.0 the rules looked for a literal `scheme://` in the source. The
+    /// > importer decodes first — `&#104;ttp://`, `http:&#47;&#47;`, `&quot;` inside
+    /// > a `style`, the CSS escape `u\72l(` — and only then reads the address, so all
+    /// > of those reached the network untouched. The same went for `<svg><image href>`,
+    /// > where `href` IS a fetch. SBW audit 2026-09-23, E2-B-P1-01 (a regression of
+    /// > P2-07 from 2026-08-11).
+    /// >
+    /// > The rules are now an allow-list: a fetching attribute keeps its value only
+    /// > when it is a `data:` URL or a plain relative path with nothing the importer
+    /// > could decode into something else (`:`, `&`, `\`, a leading `//`). A `style`
+    /// > with an entity, an escape or a non-empty `url(` goes whole. SVG goes whole.
     static func withoutRemoteResources(_ html: String) -> String {
         var result = html
         for pattern in strippedElements {
             result = RegexReplace.replacing(pattern, in: result, with: "", options: [.caseInsensitive, .dotMatchesLineSeparators])
         }
-        for pattern in strippedAttributes {
-            result = RegexReplace.replacing(pattern, in: result, with: "", options: [.caseInsensitive])
+        result = RegexReplace.apply(result, pattern: fetchingAttribute) { groups in
+            isHarmlessReference(unquoted(groups[2])) ? groups[0] : ""
+        }
+        result = RegexReplace.apply(result, pattern: styleAttribute) { groups in
+            isHarmlessStyle(unquoted(groups[1])) ? groups[0] : ""
+        }
+        // A `<style>` block is raw text — entities stay literal there — but CSS
+        // escapes do apply, so a block with a backslash goes whole.
+        result = RegexReplace.apply(result, pattern: "(?is)<style\\b[^>]*>(.*?)</style\\s*>") { groups in
+            groups[1].contains("\\") ? "" : groups[0]
         }
         // CSS, both in `<style>` blocks and in a `style="…"` attribute. The url() is
         // emptied rather than the whole declaration removed: `url()` fetches nothing,
@@ -80,6 +101,12 @@ enum HTMLPasteGuard {
     /// *relative* path in the document into a remote one, so leaving it in would undo
     /// the rest of this.
     private static let strippedElements = [
+        // SVG pulls in pictures through `<image href>` / `xlink:href` — an `href`
+        // that is a fetch, unlike on `<a>`. It contributes no text worth keeping.
+        "<svg\\b[^>]*>.*?</svg\\s*>",
+        "<svg\\b[^>]*/?>",
+        "<image\\b[^>]*/?>",
+        "<meta\\b[^>]*>",
         "<script\\b[^>]*>.*?</script\\s*>",
         "<script\\b[^>]*/?>",
         "<style\\b[^>]*>(?=[^<]*@import)[^<]*</style\\s*>",
@@ -97,12 +124,34 @@ enum HTMLPasteGuard {
 
     /// Attributes that make the importer go and get something. `href` is missing from
     /// this list on purpose: on an `<a>` it is a link the user may want to keep, and it
-    /// is not fetched. The elements whose `href` *is* fetched (`link`, `base`) are
-    /// removed whole above.
-    ///
-    /// Protocol-relative `//host/path` counts as remote — it resolves to https.
-    private static let strippedAttributes = [
-        "\\s(?:src|srcset|poster|background|lowsrc|dynsrc|profile|longdesc|manifest|cite|usemap|codebase|data)"
-            + "\\s*=\\s*(?:\"\\s*(?:[a-z][a-z0-9+.-]*:)?//[^\"]*\"|'\\s*(?:[a-z][a-z0-9+.-]*:)?//[^']*'|(?:[a-z][a-z0-9+.-]*:)?//[^\\s>]+)",
-    ]
+    /// is not fetched. The elements whose `href` *is* fetched (`link`, `base`, SVG's
+    /// `image`) are removed whole above.
+    private static let fetchingAttribute =
+        "(?i)\\s(src|srcset|poster|background|lowsrc|dynsrc|profile|longdesc|manifest|cite|usemap|codebase|data)"
+            + "\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)"
+
+    private static let styleAttribute = "(?i)\\sstyle\\s*=\\s*(\"[^\"]*\"|'[^']*')"
+
+    private static func unquoted(_ value: String) -> String {
+        var v = value
+        if let first = v.first, first == "\"" || first == "'", v.count >= 2 { v = String(v.dropFirst().dropLast()) }
+        return v.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `data:` (bytes already in the clipboard), or a plain relative path — with no
+    /// base it resolves to nothing. Anything the importer could decode into a scheme
+    /// or a host is stripped: protocol-relative `//host` resolves to https.
+    static func isHarmlessReference(_ value: String) -> Bool {
+        if value.lowercased().hasPrefix("data:") { return true }
+        if value.hasPrefix("//") { return false }
+        return !value.contains(":") && !value.contains("&") && !value.contains("\\")
+    }
+
+    /// Plain inline styling passes; anything that could be decoded into a fetch
+    /// does not. `url()` left empty by the rule above counts as plain.
+    static func isHarmlessStyle(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        if value.contains("&") || value.contains("\\") || lower.contains("image-set") { return false }
+        return !lower.replacingOccurrences(of: "url()", with: "").contains("url(")
+    }
 }

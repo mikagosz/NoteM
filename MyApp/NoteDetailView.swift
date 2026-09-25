@@ -497,11 +497,20 @@ struct NoteDetailView: View {
         }
         let richData = NoteRichArchive.data(from: attributed)
         let referenced = referencedAttachmentNames(in: attributed, markdown: markdown)
-        model.save(note, content: markdown, richData: richData, referencedAttachments: referenced)
+        // 🔴 Only a save that reached the disk counts. Before 1.1.1 a failed save
+        // (full disk, iCloud briefly unavailable) still set `dirty = false`, so every
+        // later flush — closing the note, ⌘Q — found nothing to write, and the text
+        // lived only in the open editor. On failure `dirty` stays set, the banner
+        // says why, and the next flush tries again. External reloads stay blocked
+        // meanwhile: letting one in would replace the unsaved text with the old file.
+        // SBW audit 2026-09-23, E3-S-P2-01.
+        guard model.save(note, content: markdown, richData: richData, referencedAttachments: referenced) else {
+            dirty = true
+            return
+        }
         loadedMarkdown = markdown
         dirty = false
-        // The text is on disk (or the save failed and told the user) — external
-        // reloads may run again.
+        // The text is on disk — external reloads may run again.
         model.endPendingEdits(for: note.id)
     }
 

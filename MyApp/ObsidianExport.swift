@@ -58,6 +58,10 @@ enum ObsidianExport {
     struct Outcome {
         let relativePath: String
         let exportedAt: Date
+        /// Vault-relative paths of the attachment files THIS export copied in.
+        /// Stored in `meta.json` (`obsidianAttachments`) — the only list the next
+        /// export and `removeMirror` may delete from. SBW audit 2026-09-23, E1-S-P1-02.
+        let attachments: [String]
     }
 
     enum ExportError: LocalizedError {
@@ -93,7 +97,8 @@ enum ObsidianExport {
         category: String,
         noteFolder: URL,
         vaultFolder: URL,
-        previousRelativePath: String?
+        previousRelativePath: String?,
+        previousAttachments: [String]? = nil
     ) throws -> Outcome {
         let fm = FileManager.default
         do {
@@ -125,11 +130,13 @@ enum ObsidianExport {
         // all), so two notes with the same title do not share
         // jednego folderu, a `removeMirror` trafia potem w to samo miejsce.
         let attachmentsPrefix = attachmentsDir + "/" + (fileName as NSString).deletingPathExtension
-        let body = rewriteAttachments(
+        let (body, copied) = rewriteAttachments(
             in: markdown,
             sourceFolder: noteFolder.appendingPathComponent("attachments", isDirectory: true),
             vaultFolder: vaultFolder,
-            attachmentsPrefix: attachmentsPrefix
+            attachmentsPrefix: attachmentsPrefix,
+            owned: Set(previousAttachments ?? []),
+            migrating: previousAttachments == nil && previousRelativePath != nil
         )
 
         let document = frontMatter(for: note, category: folder, exportedAt: now) + "\n" + body
@@ -141,53 +148,57 @@ enum ObsidianExport {
             throw ExportError.writeFailed(fileName)
         }
 
-        // The note may have changed title or category — remove the previous copy
-        // together with its attachment folder, so no orphans are left in the vault.
+        // 🔴 Clean up only what the PREVIOUS export copied and this one no longer
+        // does. Until 1.1.0 the cleanup deleted everything in `Zalaczniki/<name>/`
+        // that this pass didn't copy — including the user's own files, if the mirror
+        // pointed at a shared vault folder and a note carried that folder's name.
+        // SBW audit 2026-09-23, E1-S-P1-02.
+        removeAttachments(Set(previousAttachments ?? []).subtracting(copied), vaultFolder: vaultFolder)
+
+        // The note may have changed title or category — remove the previous copy.
+        // Its attachments were handled just above.
         if let previousRelativePath, previousRelativePath != relativePath {
-            removeMirror(relativePath: previousRelativePath, vaultFolder: vaultFolder, noteID: note.id)
+            removeMirror(relativePath: previousRelativePath, vaultFolder: vaultFolder, noteID: note.id,
+                         ownedAttachments: [])
         }
 
-        return Outcome(relativePath: relativePath, exportedAt: now)
+        return Outcome(relativePath: relativePath, exportedAt: now, attachments: copied.sorted())
     }
 
-    /// Removes a note's copy from the vault along with its attachment folder — but
-    /// only if the file really belongs to that note.
-    static func removeMirror(relativePath: String, vaultFolder: URL, noteID: UUID) {
-        let fileURL = vaultFolder.appendingPathComponent(relativePath)
-        // Read the copy before it goes: its own embeds say exactly which files in
-        // "Zalaczniki" belong to this note. Deleting the whole
-        // folder by name would also take files the user put there themselves, if
-        // the folder name happened to match the note's slug.
-        let ourAttachments = embeddedAttachmentPaths(in: (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "")
-        guard removeOwnedFile(at: fileURL, noteID: noteID) else { return }
-
+    /// Deletes the given vault-relative attachment files and any attachment folder
+    /// left empty by that. Paths that could climb out of the vault are skipped.
+    private static func removeAttachments(_ paths: Set<String>, vaultFolder: URL) {
         let fm = FileManager.default
-        for path in ourAttachments {
-            guard let decodedPath = confinedVaultPath(path) else { continue }
-            try? fm.removeItem(at: vaultFolder.appendingPathComponent(decodedPath))
+        var folders = Set<URL>()
+        for path in paths {
+            guard let confined = confinedVaultPath(path),
+                  confined.hasPrefix(attachmentsDir + "/") else { continue }
+            let url = vaultFolder.appendingPathComponent(confined)
+            try? fm.removeItem(at: url)
+            folders.insert(url.deletingLastPathComponent())
         }
-
-        // The folder goes only when nothing is left in it.
-        let base = (fileURL.lastPathComponent as NSString).deletingPathExtension
-        let attachments = vaultFolder
-            .appendingPathComponent(attachmentsDir, isDirectory: true)
-            .appendingPathComponent(base, isDirectory: true)
-        if let remaining = try? fm.contentsOfDirectory(atPath: attachments.path), remaining.isEmpty {
-            try? fm.removeItem(at: attachments)
+        for folder in folders {
+            if let remaining = try? fm.contentsOfDirectory(atPath: folder.path), remaining.isEmpty {
+                try? fm.removeItem(at: folder)
+            }
         }
     }
 
-    /// The `Zalaczniki/…` paths embedded in the note's copy — both images
-    /// (`![[Zalaczniki/notatka/plik.png]]`), jak i pliki
-    /// (`[[Zalaczniki/note/contract.pdf|contract.pdf]]`). Ordinary wiki links to
-    /// other notes carry no such prefix, so they are not picked up here.
-    private static func embeddedAttachmentPaths(in markdown: String) -> [String] {
-        let prefix = NSRegularExpression.escapedPattern(for: attachmentsDir)
-        let pattern = "!?\\[\\[(" + prefix + "/[^\\]|]+)"
-        let ns = markdown as NSString
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length))
-            .map { ns.substring(with: $0.range(at: 1)).trimmingCharacters(in: .whitespaces) }
+    /// Removes a note's copy from the vault along with the attachments it copied
+    /// in — but only if the file really belongs to that note.
+    ///
+    /// 🔴 Which attachments go comes from `ownedAttachments` — the list recorded
+    /// in `meta.json` at export — and from nothing else. Until 1.1.0 the list was
+    /// read from the copy's own text, which can be edited in Obsidian: an embed
+    /// added there by hand pointed at a file NoteM never created, and deleting the
+    /// note deleted that file too. `nil` (a copy exported before the list existed)
+    /// deletes no attachments — an orphan is recoverable, a deleted file is not.
+    /// SBW audit 2026-09-23, E1-S-P1-02.
+    static func removeMirror(relativePath: String, vaultFolder: URL, noteID: UUID,
+                             ownedAttachments: [String]? = nil) {
+        let fileURL = vaultFolder.appendingPathComponent(relativePath)
+        guard removeOwnedFile(at: fileURL, noteID: noteID) else { return }
+        removeAttachments(Set(ownedAttachments ?? []), vaultFolder: vaultFolder)
     }
 
     /// A relative path that provably cannot climb out of the vault.
@@ -245,27 +256,59 @@ enum ObsidianExport {
 
     /// Copies the note's attachments into the vault and rewrites `attachments/…`
     /// na osadzenia w stylu Obsidiana (`![[Zalaczniki/notatka/plik.png]]`).
+    ///
+    /// Returns the rewritten text and the vault-relative paths of the files it
+    /// copied. A file that already sits at the destination and is NOT on `owned`
+    /// is somebody else's: it is left alone and the copy gets a suffixed name.
     private static func rewriteAttachments(
         in markdown: String,
         sourceFolder: URL,
         vaultFolder: URL,
-        attachmentsPrefix: String
-    ) -> String {
+        attachmentsPrefix: String,
+        owned: Set<String>,
+        migrating: Bool
+    ) -> (String, Set<String>) {
         let fm = FileManager.default
         let targetFolder = vaultFolder.appendingPathComponent(attachmentsPrefix, isDirectory: true)
         var copied = Set<String>()
+        /// Source name → the path written into the note (so a file used twice is copied once).
+        var written: [String: String] = [:]
 
         /// Copies one file into the vault; returns the path to write into the note.
         func copyIfNeeded(_ name: String) -> String? {
+            if let path = written[name] { return path }
             let source = sourceFolder.appendingPathComponent(name)
             guard fm.fileExists(atPath: source.path) else { return nil }
-            if copied.insert(name).inserted {
-                try? fm.createDirectory(at: targetFolder, withIntermediateDirectories: true)
-                let destination = targetFolder.appendingPathComponent(name)
-                try? fm.removeItem(at: destination)
-                guard (try? fm.copyItem(at: source, to: destination)) != nil else { return nil }
+            try? fm.createDirectory(at: targetFolder, withIntermediateDirectories: true)
+
+            // A copy exported before 1.1.1 has no ownership list. Its own earlier
+            // attachment sits here byte for byte — reuse it instead of making a
+            // suffixed duplicate. Only while migrating: afterwards the list decides.
+            let naMiejscu = targetFolder.appendingPathComponent(name)
+            if migrating, fm.contentsEqual(atPath: source.path, andPath: naMiejscu.path) {
+                let path = attachmentsPrefix + "/" + name
+                copied.insert(path)
+                written[name] = path
+                return path
             }
-            return attachmentsPrefix + "/" + name
+
+            // 🔴 Never overwrite a file NoteM didn't put there (E1-S-P1-02).
+            var targetName = name
+            var n = 1
+            while fm.fileExists(atPath: targetFolder.appendingPathComponent(targetName).path),
+                  !owned.contains(attachmentsPrefix + "/" + targetName) {
+                let stem = (name as NSString).deletingPathExtension
+                let ext = (name as NSString).pathExtension
+                targetName = "\(stem) (NoteM\(n == 1 ? "" : " \(n)"))" + (ext.isEmpty ? "" : "." + ext)
+                n += 1
+            }
+            let destination = targetFolder.appendingPathComponent(targetName)
+            try? fm.removeItem(at: destination)
+            guard (try? fm.copyItem(at: source, to: destination)) != nil else { return nil }
+            let path = attachmentsPrefix + "/" + targetName
+            copied.insert(path)
+            written[name] = path
+            return path
         }
 
         // Obrazki: ![alt](attachments/x) → ![[Zalaczniki/notatka/x]]
@@ -278,14 +321,7 @@ enum ObsidianExport {
             guard let name = decoded(groups[2]), let path = copyIfNeeded(name) else { return groups[0] }
             return "[[" + path + "|" + groups[1] + "]]"
         }
-
-        // Clean up after attachments the note no longer uses.
-        if let existing = try? fm.contentsOfDirectory(at: targetFolder, includingPropertiesForKeys: nil) {
-            for item in existing where !copied.contains(item.lastPathComponent) {
-                try? fm.removeItem(at: item)
-            }
-        }
-        return result
+        return (result, copied)
     }
 
     private static func decoded(_ rawName: String) -> String? {

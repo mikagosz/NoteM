@@ -161,7 +161,8 @@ final class NotesModel {
     /// sync conflicts (the same note id sitting in more than one folder).
     func reload() {
         store.emptyTrash(olderThanDays: trashRetentionProvider())
-        apply(live: store.loadAllNotes(), trashed: store.loadTrashedNotes())
+        let live = store.loadAllNotesReportingUnreadable()
+        apply(live: live.notes, trashed: store.loadTrashedNotes(), unreadable: live.unreadable)
     }
 
     /// `reload()` with the two directory walks off the main thread.
@@ -174,19 +175,32 @@ final class NotesModel {
     /// than borrowing this store — a store is not `Sendable`, and handing the live
     /// one to another thread is how two threads end up writing one file. Only the
     /// decoded notes come back, and `Note` is a value type.
-    func reloadInBackground() async {
+    ///
+    /// `refuseWhileEditing`: re-checks for unsaved editor text AFTER the read —
+    /// an edit can start while the walk runs in the background, and applying the
+    /// older copy then would swap it out from under the editor. Returns whether the
+    /// notes were applied.
+    @discardableResult
+    func reloadInBackground(refuseWhileEditing: Bool = false) async -> Bool {
         store.emptyTrash(olderThanDays: trashRetentionProvider())
         let root = store.rootURL
-        let loaded = await Task.detached(priority: .userInitiated) { () -> (live: [Note], trashed: [Note]) in
-            (NoteStore.readAllNotes(root: root), NoteStore.readTrashedNotes(root: root))
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (live: [Note], trashed: [Note], unreadable: [String]) in
+            let live = NoteStore.readAllNotesReportingUnreadable(root: root)
+            return (live.notes, NoteStore.readTrashedNotes(root: root), live.unreadable)
         }.value
-        apply(live: loaded.live, trashed: loaded.trashed)
+        if refuseWhileEditing, !notesWithPendingEdits.isEmpty { return false }
+        // The store may have been switched (sync toggled) while the read ran —
+        // those notes belong to a root that is no longer ours.
+        guard store.rootURL == root else { return false }
+        apply(live: loaded.live, trashed: loaded.trashed, unreadable: loaded.unreadable)
+        return true
     }
 
     /// Everything `reload()` does once the notes are in memory. Shared with
     /// `reloadInBackground()` so the two cannot drift apart — the lesson from
     /// `StorageLocation` and from `Loc`: two copies of one rule stop matching.
-    private func apply(live raw: [Note], trashed rawTrashed: [Note]) {
+    private func apply(live raw: [Note], trashed rawTrashed: [Note], unreadable: [String] = []) {
+        reportUnreadable(unreadable)
         let grouped = Dictionary(grouping: raw, by: \.id)
         conflicts = grouped
             .filter { $0.value.count > 1 }
@@ -210,6 +224,22 @@ final class NotesModel {
         categoryColors = colors
 
         rebuildAttachments()
+    }
+
+    /// Folders whose `meta.json` couldn't be read — reported once per distinct set,
+    /// so a dismissed banner doesn't come back on every reload for the same files.
+    @ObservationIgnored private var reportedUnreadable: Set<String> = []
+
+    private func reportUnreadable(_ paths: [String]) {
+        let set = Set(paths)
+        defer { reportedUnreadable = set }
+        guard !set.isEmpty, set != reportedUnreadable else { return }
+        let lista = paths.sorted().prefix(3).joined(separator: ", ")
+        let reszta = paths.count > 3 ? Loc.t(" i \(paths.count - 3) innych", " and \(paths.count - 3) more") : ""
+        storeError = Loc.t(
+            "Nie da się odczytać danych \(paths.count) notatek (meta.json) — nie ma ich na liście, ale ich treść (note.md) leży na dysku: \(lista)\(reszta)",
+            "Couldn't read the data of \(paths.count) notes (meta.json) — they're missing from the list, but their text (note.md) is on disk: \(lista)\(reszta)"
+        )
     }
 
     // MARK: - Category cover colour
@@ -266,11 +296,14 @@ final class NotesModel {
     /// and the user's last few seconds of typing would be gone. The autosave
     /// runs a second after the last keystroke, so the caller only has to come
     /// back on its next poll.
-    @discardableResult
-    func reloadFromExternalChange() -> Bool {
+    ///
+    /// The directory walk runs off the main thread. Until 1.1.0 this path called
+    /// the synchronous `reload()`, so every change arriving from the other Mac
+    /// froze the window for the length of a full walk (~0.3 s at 500 notes).
+    /// SBW audit 2026-09-23, E1-W-P2-01.
+    func reloadFromExternalChange() async -> Bool {
         guard notesWithPendingEdits.isEmpty else { return false }
-        reload()
-        return true
+        return await reloadInBackground(refuseWhileEditing: true)
     }
 
     // MARK: - Storage location (sync)
@@ -333,11 +366,14 @@ final class NotesModel {
                      "Notes: \(what). They stayed in \(oldRoot.path) — \(names)\(more)")
     }
 
-    /// Resolves a conflict by keeping one version and permanently removing the
-    /// other folders that share its id.
+    /// Resolves a conflict by keeping one version and moving the other folders
+    /// that share its id to the trash — as separate notes, each under a fresh id.
+    ///
+    /// Until 1.1.0 the other versions were deleted permanently, with no trash and
+    /// no question. SBW audit 2026-09-23, E1-S-P3-01.
     func resolveConflict(_ conflict: NoteConflict, keeping keep: Note) {
         for version in conflict.versions where version.folderPath != keep.folderPath {
-            store.deleteNote(version)
+            store.trashConflictVersion(version)
         }
         reload()
     }
@@ -483,10 +519,12 @@ final class NotesModel {
                 category: category(of: current),
                 noteFolder: store.folderURL(for: current),
                 vaultFolder: obsidianConfigProvider().folder,
-                previousRelativePath: current.obsidianPath
+                previousRelativePath: current.obsidianPath,
+                previousAttachments: current.obsidianAttachments
             )
             notes[index].obsidianExportedAt = outcome.exportedAt
             notes[index].obsidianPath = outcome.relativePath
+            notes[index].obsidianAttachments = outcome.attachments
             store.updateMeta(notes[index])
             obsidianError = nil
             return true
@@ -511,7 +549,8 @@ final class NotesModel {
         let mirrored = notes.filter { $0.obsidianPath != nil }
         for note in mirrored {
             guard let path = note.obsidianPath else { continue }
-            ObsidianExport.removeMirror(relativePath: path, vaultFolder: oldFolder, noteID: note.id)
+            ObsidianExport.removeMirror(relativePath: path, vaultFolder: oldFolder, noteID: note.id,
+                                        ownedAttachments: note.obsidianAttachments)
         }
         return exportEach(mirrored.map(\.id))
     }
@@ -585,6 +624,7 @@ final class NotesModel {
 
         notes[index].obsidianPath = nil
         notes[index].obsidianExportedAt = nil
+        notes[index].obsidianAttachments = nil
         store.updateMeta(notes[index])
     }
 
@@ -595,7 +635,8 @@ final class NotesModel {
         ObsidianExport.removeMirror(
             relativePath: path,
             vaultFolder: obsidianConfigProvider().folder,
-            noteID: note.id
+            noteID: note.id,
+            ownedAttachments: note.obsidianAttachments
         )
     }
 
@@ -806,18 +847,23 @@ final class NotesModel {
     /// `richData` is the full-fidelity archive of the editor's attributed string;
     /// pass `nil` for markdown-only saves (quick capture, task completion), which
     /// clears any stale rich cache so display rebuilds from markdown.
-    func save(_ note: Note, content: String, richData: Data? = nil, referencedAttachments: Set<String>? = nil) {
+    /// Returns whether the text reached the disk. The editor marks its text as
+    /// saved only on `true` — before, a failed save still cleared `dirty`, so the
+    /// next flush (closing the note, ⌘Q) found nothing to write and the text lived
+    /// only in the open editor. SBW audit 2026-09-23, E3-S-P2-01.
+    @discardableResult
+    func save(_ note: Note, content: String, richData: Data? = nil, referencedAttachments: Set<String>? = nil) -> Bool {
         // Use the model's own copy for the authoritative folder path: the note
         // may have been moved by the categorization engine since the editor
         // loaded it, so the caller's `folderPath` can be stale.
-        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return false }
 
         var current = notes[index]
         current.title = Self.deriveTitle(from: content)
         current.links = resolveLinks(in: content, excluding: current.id)
         // The text didn't reach the disk: leave the list showing the last version
         // that did, rather than marking the note as saved. `storeError` says why.
-        guard var saved = store.saveNote(current, content: content, richData: richData) else { return }
+        guard var saved = store.saveNote(current, content: content, richData: richData) else { return false }
 
         // Auto-file into a category folder based on the rules (first match wins).
         if let newFolderPath = CategoryEngine.targetFolderPath(
@@ -845,6 +891,7 @@ final class NotesModel {
         if obsidianConfigProvider().autoExport {
             scheduleObsidianExport(for: saved)
         }
+        return true
     }
 
     /// Sort order for the notes list: pinned notes first, then newest-modified.
