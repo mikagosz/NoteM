@@ -147,6 +147,24 @@ nonisolated enum StorageLocation {
         return base.appendingPathComponent("NoteM", isDirectory: true)
     }
 
+    /// Where unsaved quick notes wait between launches (`QuickCaptureDraft`).
+    ///
+    /// Deliberately **outside** every store root: the store root is scanned for
+    /// `meta.json`, indexed, searched and mirrored to Obsidian, and a draft is
+    /// none of those things until the user presses Save. Per Mac on purpose, like
+    /// an open window — `~/Library/Application Support` does not travel with iCloud.
+    ///
+    /// Follows the store redirect the same way `iCloudRoot` does, so a test copy
+    /// or an `xcodebuild test` host never reopens — or writes — the real drafts.
+    static var quickCaptureDraftsRoot: URL {
+        if let redirected = overriddenRoot(defaultsKey: storeRootKey, environmentKey: storeRootEnvironmentKey) {
+            return redirected.deletingLastPathComponent()
+                .appendingPathComponent("NoteM-brudnopisy", isDirectory: true)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NoteM/Brudnopisy", isDirectory: true)
+    }
+
     /// Root of the Obsidian vault that receives exported notes, unless redirected.
     static var vaultRoot: URL {
         overriddenRoot(defaultsKey: "NoteMVaultRoot", environmentKey: "NOTEM_VAULT_ROOT")

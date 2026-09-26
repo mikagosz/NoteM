@@ -110,9 +110,14 @@ final class QuickCaptureManager {
     /// Watches for the app coming back to the front (e.g. from System Settings).
     private var activationObserver: (any NSObjectProtocol)?
 
+    /// Drafts are reopened once per launch. `start` runs from `ContentView.onAppear`,
+    /// i.e. once per window, and a second pass would open every draft twice.
+    private var draftsRestored = false
+
     func start(model: NotesModel, settings: AppSettings) {
         self.model = model
         self.settings = settings
+        restoreDrafts()
         // No system prompt on launch. The grant is tied to the app's code
         // signature, so an ad-hoc ("Sign to Run Locally") build looks like a new
         // app to macOS after every rebuild and the prompt would come back every
@@ -385,14 +390,35 @@ final class QuickCaptureManager {
 
     // MARK: - Capture panels
 
+    /// Reopens every draft left from the previous run, each where its panel stood
+    /// — panels come back by themselves, like Stickies.
+    ///
+    /// Not gated on `quickCaptureEnabled`: switching the corner off must not hide
+    /// text the user never chose to throw away. Restored panels are only ordered
+    /// front, not made key — a launch should not pull focus into a floating note.
+    private func restoreDrafts() {
+        guard !draftsRestored else { return }
+        draftsRestored = true
+        for draft in QuickCaptureDraft.all() {
+            openPanel(at: nil, draft: draft, restoring: true)
+        }
+    }
+
     /// Always opens a fresh panel. Existing panels stay put, so triggering again
     /// never closes a note in progress. `corner` picks where it appears; `nil`
     /// (keyboard shortcut) falls back to the first enabled corner.
-    private func openPanel(at corner: QuickCaptureCorner?) {
-        guard let settings, settings.quickCaptureEnabled else { return }
+    ///
+    /// `draft` is the panel's scratchpad on disk — new for a fresh panel, an
+    /// existing one when `restoreDrafts` brings a panel back.
+    private func openPanel(at corner: QuickCaptureCorner?,
+                           draft: QuickCaptureDraft = .new(),
+                           restoring: Bool = false) {
+        guard let settings else { return }
+        guard restoring || settings.quickCaptureEnabled else { return }
         let target = corner ?? settings.quickCaptureCorners.first ?? .topRight
         let panel = QuickCapturePanel()
         panel.setContent(QuickCaptureView(
+            draft: draft,
             onSave: { [weak self] markdown, richData, isTaskList, staged in
                 self?.saveNote(markdown, richData: richData, isTaskList: isTaskList, staged: staged)
             },
@@ -403,9 +429,29 @@ final class QuickCaptureManager {
                                staged: staged, toObsidian: true)
             }
         ))
-        positionPanel(panel, corner: target, index: panels.count)
+        if let origin = draft.readMeta().origin, Self.isOnScreen(origin, size: panel.frame.size) {
+            panel.setFrameOrigin(origin)
+        } else {
+            positionPanel(panel, corner: target, index: panels.count)
+        }
         panels.append(panel)
-        panel.makeKeyAndOrderFront(nil)
+        if restoring {
+            panel.orderFront(nil)
+        } else {
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// Whether a panel placed at `origin` would still be reachable — enough of it
+    /// on some display to grab it. A draft saved on an external monitor that is
+    /// no longer connected would otherwise reopen somewhere nobody can see.
+    static func isOnScreen(_ origin: CGPoint, size: CGSize,
+                           screens: [CGRect] = NSScreen.screens.map(\.visibleFrame)) -> Bool {
+        let frame = CGRect(origin: origin, size: size)
+        return screens.contains { screen in
+            let overlap = screen.intersection(frame)
+            return !overlap.isNull && overlap.width >= 60 && overlap.height >= 60
+        }
     }
 
     private func closePanel(_ panel: QuickCapturePanel?) {
@@ -475,9 +521,20 @@ final class QuickCaptureStaging {
     /// Every file staged so far, in insertion order.
     private(set) var files: [URL] = []
 
-    init() {
-        folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteM-szybka-notatka-\(UUID().uuidString)", isDirectory: true)
+    /// A throwaway folder in the temporary directory — what the tests use.
+    convenience init() {
+        self.init(folder: FileManager.default.temporaryDirectory
+            .appendingPathComponent("NoteM-szybka-notatka-\(UUID().uuidString)", isDirectory: true))
+    }
+
+    /// Stages into `folder`. A quick-capture panel passes its draft folder
+    /// (`QuickCaptureDraft`), which outlives a restart — so files already in its
+    /// `attachments/` are picked up again and still reach the note on Save.
+    init(folder: URL) {
+        self.folder = folder
+        let attachments = folder.appendingPathComponent("attachments", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: attachments.path)) ?? []
+        files = names.filter { !$0.hasPrefix(".") }.sorted().map { attachments.appendingPathComponent($0) }
     }
 
     /// Copies `fileURL` into the staging folder and returns the name the note
@@ -618,6 +675,9 @@ final class QuickCapturePanel: NSPanel {
 /// main editor, so pasting keeps the source formatting 1:1 (colours, fonts,
 /// sizes, images) — identical to the main window.
 struct QuickCaptureView: View {
+    /// This panel's scratchpad on disk: the text lives here between launches
+    /// until Save turns it into a note or Close throws it away.
+    let draft: QuickCaptureDraft
     /// Called with the note's markdown, its full-fidelity rich archive, whether
     /// it should be saved as a task-list note, and the files staged for it.
     let onSave: (String, Data?, Bool, [URL]) -> Void
@@ -629,18 +689,38 @@ struct QuickCaptureView: View {
 
     /// Its own controller per panel, so several open notes don't share state.
     @State private var controller = RichTextController()
-    /// Where dropped and pasted files wait until this note exists.
-    @State private var staging = QuickCaptureStaging()
+    /// Where dropped and pasted files wait until this note exists — the draft
+    /// folder, so they survive a restart along with the text.
+    @State private var staging: QuickCaptureStaging
     /// Black vs white note background — remembered across quick notes and launches,
     /// mirroring the toggle in the main editor.
     @AppStorage(AppSettings.quickCaptureDarkKey) private var darkBackground = false
     /// When on, the saved note is flagged as a planned task list.
-    @State private var isTaskList = false
+    @State private var isTaskList: Bool
     /// Confirmation before the quick note is saved and sent to the vault.
     @State private var showObsidianConfirm = false
     /// Identifies this panel in `PendingWork`. Per panel, not per note — a quick
     /// note has no id until it is saved, and several panels can be open at once.
     @State private var pendingID = UUID()
+    /// The debounced draft write, restarted on every edit.
+    @State private var draftWrite: Task<Void, Never>?
+    /// Set once the panel is on its way out (saved or discarded). A draft write
+    /// still in flight must not recreate the folder that was just removed.
+    @State private var isClosed = false
+
+    init(draft: QuickCaptureDraft,
+         onSave: @escaping (String, Data?, Bool, [URL]) -> Void,
+         onClose: @escaping () -> Void,
+         obsidianConnected: Bool = false,
+         onSaveToObsidian: ((String, Data?, Bool, [URL]) -> Void)? = nil) {
+        self.draft = draft
+        self.onSave = onSave
+        self.onClose = onClose
+        self.obsidianConnected = obsidianConnected
+        self.onSaveToObsidian = onSaveToObsidian
+        _staging = State(initialValue: QuickCaptureStaging(folder: draft.folder))
+        _isTaskList = State(initialValue: draft.readMeta().isTaskList)
+    }
 
     /// Weekday + full date at the moment the note opened, in the app language,
     /// e.g. "czwartek, 16 lipca 2026" / "Thursday, July 16, 2026".
@@ -758,19 +838,25 @@ struct QuickCaptureView: View {
                            "The note will be saved in NoteM and copied into the Obsidian vault as an .md file."))
             }
             .onAppear {
-                controller.setContent(
-                    NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes)
-                )
+                // A restored draft comes back with its formatting; a new panel is empty.
+                controller.setContent(draft.readContent()
+                    ?? NSAttributedString(string: "", attributes: MarkdownStyler.defaultTypingAttributes))
+                // The draft is written a second after the last keystroke — the same
+                // debounce as the main editor. Waiting for quit alone would lose it
+                // to a crash or a forced kill, which a scratchpad must survive too.
+                controller.onChange = { scheduleDraftWrite() }
                 // Attachments land in the staging folder and move into the note
                 // when it is created. Without these two the editor had nowhere
                 // to put a file: a dropped one vanished without a word, and a
                 // pasted image never reached note.md.
                 controller.onAddAttachment = { [staging] fileURL in staging.stage(fileURL) }
                 controller.noteFolderProvider = { [staging] in staging.folder }
-                // Quick capture has no autosave, so without this a quit would throw
-                // away everything typed here. The red "Close" button still discards
-                // on purpose — only quitting saves.
-                PendingWork.shared.register(pendingID) { saveIfTyped() }
+                // Quitting keeps the text as a **draft**, not as a note: it reopens in
+                // this panel on the next launch. Before 1.1.2 quitting created a note in
+                // Inbox — the fix for losing the last second of typing, which this
+                // replaces without going back to losing it. The red "Close" still
+                // discards on purpose.
+                PendingWork.shared.register(pendingID) { writeDraft() }
                 // Put the caret in the editor so the user can type right away.
                 DispatchQueue.main.async {
                     if let textView = controller.textView {
@@ -783,6 +869,13 @@ struct QuickCaptureView: View {
                 controller.hideFloatingPanel()
             }
             .onExitCommand { saveAndClose() }
+            .onChange(of: isTaskList) { writeDraft() }
+            // Where the panel stands is part of the draft: it reopens there.
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMoveNotification)) { note in
+                guard let window = note.object as? NSWindow,
+                      window === controller.textView?.window else { return }
+                writeDraft()
+            }
             // The panel is a fixed-size floating window (360×400) and its content
             // is a text editor, so it cannot scroll the way the settings panes
             // now do. What it can do is stop its own chrome from growing past the
@@ -816,19 +909,53 @@ struct QuickCaptureView: View {
     /// `orderOut`, and a hosted view that never reports disappearing would leave a
     /// handler behind — which on quit would save the same note a second time.
     private func close() {
+        isClosed = true
+        draftWrite?.cancel()
+        draftWrite = nil
         PendingWork.shared.unregister(pendingID)
         // Whatever was staged has either been copied into the note by now or is
         // being thrown away with it; either way it has no business staying in
         // the temporary directory.
+        // The staging folder *is* the draft folder, so this also removes the draft.
         staging.discard()
+        draft.remove()
         onClose()
+    }
+
+    /// Restarts the one-second countdown to the next draft write.
+    private func scheduleDraftWrite() {
+        draftWrite?.cancel()
+        draftWrite = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            writeDraft()
+        }
+    }
+
+    /// Puts the panel's current state on disk as its draft — or removes the draft
+    /// when there is nothing left in it, so an emptied panel does not come back.
+    private func writeDraft() {
+        guard !isClosed, let textView = controller.textView else { return }
+        let attributed = textView.attributedString()
+        let isBlank = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isBlank && staging.files.isEmpty {
+            draft.remove()
+            return
+        }
+        var meta = draft.readMeta()
+        meta.isTaskList = isTaskList
+        if let window = textView.window { meta.origin = window.frame.origin }
+        do {
+            try draft.write(richData: NoteRichArchive.data(from: attributed), meta: meta)
+        } catch {
+            Log.failure(.quickCaptureDraft, error)
+        }
     }
 
     /// Hands the panel's text to `onSave`, which drops it when it is blank.
     ///
-    /// Split out of `saveAndClose` because quitting has to save without closing:
-    /// quick capture has no autosave at all, so until this existed, ⌘Q with an open
-    /// panel threw away everything typed into it.
+    /// Only Save (and Esc) go through here. Quitting writes a draft instead —
+    /// see `writeDraft`.
     private func saveIfTyped() {
         // Images that arrived as raw bytes (a screenshot, an image dragged out of
         // another app) get a real file first — otherwise markdown has no name to

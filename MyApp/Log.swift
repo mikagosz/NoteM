@@ -50,6 +50,8 @@ enum Log {
         // and the system-wide shortcut the app was not allowed to claim.
         case quickCaptureStage      = "quick-capture-stage"
         case quickCaptureHotKey     = "quick-capture-hotkey"
+        // Quick capture — the draft that keeps an unsaved panel across launches.
+        case quickCaptureDraft      = "quick-capture-draft"
     }
 
     /// Records `event` as a failure, with the error's domain and code when there
