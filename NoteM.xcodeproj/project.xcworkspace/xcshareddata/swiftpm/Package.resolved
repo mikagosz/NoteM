@@ -1,0 +1,15 @@
+{
+  "originHash" : "02a2f18f15214d813f2b7e528dcf33246b9757d5bb13a2937617d7ae3ca64f30",
+  "pins" : [
+    {
+      "identity" : "errorupdate",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mikagosz/ErrorUpdate.git",
+      "state" : {
+        "revision" : "a4b9d71c628df7fe692358d270ba751bce384dc7",
+        "version" : "1.0.1"
+      }
+    }
+  ],
+  "version" : 3
+}

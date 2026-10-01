@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 
 /// Fully invisible overlay scroller: draws nothing, so the scrollbar never shows
@@ -360,6 +361,10 @@ private struct GeneralSettingsView: View {
 
             Divider().padding(.vertical, 4)
 
+            UpdatesSettingsBlock(settings: settings)
+
+            Divider().padding(.vertical, 4)
+
             Text(settings.t("Pisownia", "Spelling"))
                 .font(.headline)
             Toggle(settings.t("Sprawdzanie pisowni (podkreśla błędy)", "Check spelling (underline mistakes)"),
@@ -403,6 +408,40 @@ private struct GeneralSettingsView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Monthly update check: the switch, Check Now and when it last asked.
+private struct UpdatesSettingsBlock: View {
+    let settings: AppSettings
+    @AppStorage(UpdateSetting.checkUpdates) private var checkUpdates = true
+    @ObservedObject private var updates = Updates.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(settings.t("Aktualizacje", "Updates"))
+                .font(.headline)
+            Toggle(settings.t("Sprawdzaj aktualizacje raz w miesiącu", "Check for updates once a month"),
+                   isOn: $checkUpdates)
+                .onChange(of: checkUpdates) { _, on in updates.enabled = on }
+            HStack {
+                Text(lastCheckText)
+                    .foregroundStyle(.secondary)
+                Button(settings.t("Sprawdź teraz", "Check Now")) {
+                    Task { await updates.check(manually: true) }
+                }
+            }
+            Text(settings.t("Program pyta stronę fractal8.eu o numer najnowszej wersji — nic więcej nie wysyła. Nowa wersja instaluje się dopiero, gdy klikniesz „Zainstaluj”.",
+                           "The app asks fractal8.eu for the number of the newest version — it sends nothing else. A new version installs only when you click “Install”."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var lastCheckText: String {
+        guard let date = updates.lastCheck else { return settings.t("Jeszcze nie sprawdzano", "Not checked yet") }
+        return settings.t("Ostatnio: \(date.noteMDisplay)", "Last: \(date.noteMDisplay)")
     }
 }
 
@@ -797,6 +836,10 @@ struct ContentView: View {
                 // `onAppear` runs once per window.
                 PendingWork.shared.afterFlush = { [model] in model.flushPendingObsidianExports() }
                 PendingWork.shared.start()
+                // Monthly update check. Not as the test host — the tests must not ask the server.
+                if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+                    Updates.shared.start()
+                }
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
                 // Thin overlay scrollers across the app. SwiftUI Lists reset their
                 // scroller style on content/layout updates, so re-apply on several

@@ -140,9 +140,19 @@ Delete the app and your notes are still there, in a format you can read with
 
 ## Privacy
 
-NoteM makes **no network connections**. There is no telemetry, no analytics, no
-account and no server. Dictation and semantic search both run on-device. Your
-notes go to your disk and — only if you turn sync on — to your own iCloud Drive.
+There is no telemetry, no analytics, no account and no server. Dictation and
+semantic search both run on-device. Your notes go to your disk and — only if you
+turn sync on — to your own iCloud Drive.
+
+NoteM's one network request is the update check: once a month it asks
+`downloads.fractal8.eu/NoteM/api/error-update/version-check` for the newest version
+number and sends nothing else. A newer version offers **Install and Restart**,
+**Skip This Version** or a manual download; nothing installs until you click, and
+unsaved text is written before the restart, as on ⌘Q. The check runs on
+[ErrorUpdate](https://github.com/mikagosz/ErrorUpdate) 1.0.1 with crash reporting
+off; the installer checks the package's SHA-256 and requires the new app to meet the
+running one's code signature requirement. Switch and **Check Now** in Settings →
+General.
 
 That includes pasting. The system's HTML reader fetches images and stylesheets a
 copied web fragment points at, so NoteM strips those references before the paste
@@ -202,7 +212,13 @@ cd NoteM
 open NoteM.xcodeproj
 ```
 
-Then press ⌘R.
+Then press ⌘R. A release build for both Apple silicon and Intel, without the
+debugging entitlement plain `xcodebuild build` adds:
+
+```bash
+xcodebuild -project NoteM.xcodeproj -scheme NoteM -configuration Release \
+    -destination 'generic/platform=macOS' CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO build
+```
 
 The project ships with a pinned local code-signing identity, which won't exist in
 your keychain. Set **Signing & Capabilities → Signing Certificate** to *Sign to
@@ -236,6 +252,7 @@ save-on-quit path — the places where a bug costs you data rather than pixels.
 | Export | `ObsidianExport.swift`, `HTMLExport.swift` |
 | Sync | `Sync.swift` |
 | Shutdown | `PendingWork.swift` — flushes debounced writes when the app quits |
+| Updates | `Updates.swift`, `UpdateSupport.swift` — monthly check through ErrorUpdate, install and restart |
 | Misc | `Theme.swift`, `Localization.swift` |
 
 ## Licence
