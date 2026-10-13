@@ -139,11 +139,11 @@ struct HelpPictures {
             @MainActor func window(_ selection: SidebarSelection?, palette: Bool = false, title: String = "NoteM") -> NSImage {
                 Render.window(ContentView(settings: settings, model: model, sample: true, selection: selection, palette: palette)
                                 .defaultAppStorage(defaults),
-                              size: windowSize, titled: true, title: title, settle: 1.5)
+                              size: windowSize, titled: true, title: title, settle: 0.4)
             }
             @MainActor func pane(_ pane: SettingsPane) -> NSImage {
                 Render.window(SettingsView(settings: settings, model: model, pane: pane).defaultAppStorage(defaults),
-                              size: settingsSize, titled: true, title: pane.title(settings), settle: 0.6)
+                              size: settingsSize, titled: true, title: pane.title(settings), settle: 0.15)
             }
             let meeting = HelpSample.meetingNote(in: model)
             let note = meeting.map { SidebarSelection.note($0) }
@@ -152,7 +152,7 @@ struct HelpPictures {
                                          obsidianConnected: true)
             return HelpPictures(main: window(.home), note: window(note, title: noteTitle), palette: window(.home, palette: true),
                                 tasks: window(.tasks),
-                                quick: Render.window(quick.defaultAppStorage(defaults), size: quickSize, titled: true, fullSize: false, settle: 0.6),
+                                quick: Render.window(quick.defaultAppStorage(defaults), size: quickSize, titled: true, fullSize: false, settle: 0.2),
                                 filing: pane(.categorization), smartFolders: pane(.smartFolders),
                                 sync: pane(.sync), obsidian: pane(.obsidian))
         }
