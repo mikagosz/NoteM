@@ -128,8 +128,8 @@ final class AppSettings {
     }
 
     /// Folder inside the Obsidian vault that receives the exported notes.
-    var obsidianVaultPath: String {
-        didSet { defaults.set(obsidianVaultPath, forKey: Self.obsidianPathKey) }
+    var obsidianFolderPath: String {
+        didSet { defaults.set(obsidianFolderPath, forKey: Self.obsidianPathKey) }
     }
 
     /// Identifier of the selected colour theme (see `AppTheme`).
@@ -225,9 +225,9 @@ final class AppSettings {
         // the current default; anything else is a deliberate choice and stays put.
         let storedVaultPath = defaults.string(forKey: Self.obsidianPathKey)
         if let storedVaultPath, !ObsidianExport.legacyVaultFolders.contains(storedVaultPath) {
-            self.obsidianVaultPath = storedVaultPath
+            self.obsidianFolderPath = storedVaultPath
         } else {
-            self.obsidianVaultPath = ObsidianExport.defaultVaultFolder
+            self.obsidianFolderPath = ObsidianExport.defaultVaultFolder
         }
         self.themeID = defaults.string(forKey: Self.themeKey) ?? AppTheme.fallback.id
         self.startLayout = StartLayout(rawValue: defaults.string(forKey: Self.startLayoutKey) ?? "")

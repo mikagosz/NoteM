@@ -217,9 +217,21 @@ extension Date {
             ContentView(settings: settings, model: model)
         }
 
+        .commands {
+            CommandGroup(replacing: .help) {
+                Button(settings.t("Pomoc NoteM", "NoteM Help")) { HelpWindow.shared.show() }
+                    .keyboardShortcut("?", modifiers: .command)
+            }
+        }
+
         Settings {
             SettingsView(settings: settings, model: model)
         }
+    }
+
+    init() {
+        // `--export-help <folder>` draws Help into PNG files and quits before any window opens.
+        HelpExport.runIfRequested()
     }
 }
 
@@ -233,7 +245,13 @@ struct SettingsView: View {
     let settings: AppSettings
     let model: NotesModel
 
-    @State private var pane: SettingsPane = .appearance
+    @State private var pane: SettingsPane
+
+    init(settings: AppSettings, model: NotesModel, pane: SettingsPane = .appearance) {
+        self.settings = settings
+        self.model = model
+        _pane = State(initialValue: pane)
+    }
 
     var body: some View {
         TabView(selection: $pane) {
@@ -275,7 +293,7 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsPane: String, Hashable, CaseIterable {
+enum SettingsPane: String, Hashable, CaseIterable {
     case general, appearance, categorization, smartFolders, quickCapture, sync, obsidian, trash
 
     func title(_ s: AppSettings) -> String {
@@ -555,15 +573,28 @@ private let sidebarFilterRowInsets = EdgeInsets(top: 4, leading: -16, bottom: 4,
 struct ContentView: View {
     let settings: AppSettings
     let model: NotesModel
+    /// Help's picture of the window, on a sample store: none of the app's services start
+    /// (quick capture, sync, updates, the pending-work flush) and no banner about this Mac's
+    /// storage shows.
+    var sample = false
 
     @Environment(\.openSettings) private var openSettings
-    @State private var selection: SidebarSelection? = .home
+    @State private var selection: SidebarSelection?
     /// Active filter on the notes list (tag, folder, or smart folder).
     @State private var noteFilter: NoteListFilter?
     /// Whether the conflict-resolution sheet is showing.
     @State private var showConflicts = false
     /// Whether the command palette (⌘K) is showing.
     @State private var showPalette = false
+
+    init(settings: AppSettings, model: NotesModel, sample: Bool = false, selection: SidebarSelection? = .home,
+         palette: Bool = false) {
+        self.settings = settings
+        self.model = model
+        self.sample = sample
+        _selection = State(initialValue: selection)
+        _showPalette = State(initialValue: palette)
+    }
 
     /// True when a note is open in the detail pane (its own toolbar then shows
     /// the settings gear, so ContentView omits it to avoid a duplicate).
@@ -797,13 +828,13 @@ struct ContentView: View {
                     // notes other than the real ones. Without it, a `defaults
                     // write` left over from a test looks exactly like every note
                     // having disappeared — the redirect survives restarts.
-                    if let redirection = StorageLocation.redirection {
+                    if !sample, let redirection = StorageLocation.redirection {
                         StatusBanner(
                             icon: "externaldrive.fill",
                             message: storageRedirectionMessage(redirection)
                         )
                     }
-                    if let error = SyncManager.shared.syncError {
+                    if !sample, let error = SyncManager.shared.syncError {
                         StatusBanner(icon: "exclamationmark.icloud.fill", message: error)
                     }
                     // The Obsidian bridge did not deliver the note (e.g. a wrong vault folder).
@@ -819,8 +850,9 @@ struct ContentView: View {
                 model.trashRetentionProvider = { settings.trashRetentionDays }
                 model.obsidianConfigProvider = {
                     (settings.obsidianConnected && settings.obsidianAutoExport,
-                     URL(fileURLWithPath: settings.obsidianVaultPath))
+                     URL(fileURLWithPath: settings.obsidianFolderPath))
                 }
+                if sample { return }
                 model.switchStorage(syncEnabled: settings.syncEnabled, moveExisting: false)
                 // First read of the store, on a background thread — the model was
                 // built empty on purpose. Skipped when the line above already had
@@ -848,6 +880,8 @@ struct ContentView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { applyOverlayScrollersToAllWindows() }
                 }
                 OverlayScrollerWatcher.shared.start()
+                // `--show-help`: the Help window right away — for a look after changes, without the menu.
+                if CommandLine.arguments.contains("--show-help") { HelpWindow.shared.show() }
             }
             .onChange(of: settings.themeID) {
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)
@@ -941,6 +975,13 @@ struct ContentView: View {
             // Settings gear at the far right — only when no note is open, since
             // the note's own toolbar provides it (with the background toggle).
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { HelpWindow.shared.show() } label: {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundStyle(settings.theme.accent)
+                    }
+                    .help(settings.t("Pomoc NoteM", "NoteM Help"))
+                }
                 if !isNoteOpen {
                     ToolbarItem(placement: .primaryAction) {
                         Button { openSettings() } label: {
@@ -1001,6 +1042,11 @@ struct ContentView: View {
             title: settings.t("Przejdź: Kosz", "Go to: Trash"),
             icon: "trash"
         ) { noteFilter = nil; selection = .trash })
+        items.append(CommandPaletteItem(
+            id: "help",
+            title: settings.t("Pomoc NoteM", "NoteM Help"),
+            icon: "questionmark.circle"
+        ) { HelpWindow.shared.show() })
 
         // Contextual commands for the currently open note.
         if case .note(let id) = selection, let note = model.notes.first(where: { $0.id == id }) {

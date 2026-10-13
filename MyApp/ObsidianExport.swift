@@ -506,7 +506,7 @@ struct ObsidianSettingsView: View {
                 Text(settings.t("Folder w sejfie", "Vault folder"))
                     .font(.callout.bold())
                 HStack(spacing: 8) {
-                    Text(settings.obsidianVaultPath)
+                    Text(settings.obsidianFolderPath)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -515,7 +515,7 @@ struct ObsidianSettingsView: View {
                     Button(settings.t("Zmień…", "Change…"), action: chooseFolder)
                     Button(settings.t("Pokaż w Finderze", "Show in Finder")) {
                         NSWorkspace.shared.activateFileViewerSelecting(
-                            [URL(fileURLWithPath: settings.obsidianVaultPath)]
+                            [URL(fileURLWithPath: settings.obsidianFolderPath)]
                         )
                     }
                 }
@@ -568,13 +568,13 @@ struct ObsidianSettingsView: View {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: settings.obsidianVaultPath)
+        panel.directoryURL = URL(fileURLWithPath: settings.obsidianFolderPath)
         panel.prompt = settings.t("Wybierz", "Choose")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let previous = URL(fileURLWithPath: settings.obsidianVaultPath)
+        let previous = URL(fileURLWithPath: settings.obsidianFolderPath)
         guard url.path != previous.path else { return }
 
-        settings.obsidianVaultPath = url.path
+        settings.obsidianFolderPath = url.path
         model.clearObsidianError()
         // Take the copies out of the old folder, so no orphans are left there.
         let result = model.relocateObsidianMirror(from: previous)
