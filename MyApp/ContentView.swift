@@ -883,7 +883,11 @@ struct ContentView: View {
                 }
                 OverlayScrollerWatcher.shared.start()
                 // `--show-help`: the Help window right away — for a look after changes, without the menu.
-                if CommandLine.arguments.contains("--show-help") { HelpWindow.shared.show() }
+                // Once per launch: this runs for every main window, and a window reopened later brought Help back.
+                if CommandLine.arguments.contains("--show-help"), !HelpWindow.shownAtLaunch {
+                    HelpWindow.shownAtLaunch = true
+                    HelpWindow.shared.show()
+                }
             }
             .onChange(of: settings.themeID) {
                 MarkdownStyler.checkboxColor = NSColor(settings.theme.accent)

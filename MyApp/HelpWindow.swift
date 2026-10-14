@@ -14,6 +14,8 @@ final class HelpWindow {
     static let shared = HelpWindow()
     /// Left out of the app's invisible scroll bars (`applyThinScrollers`).
     static let identifier = NSUserInterfaceItemIdentifier("NoteMHelp")
+    /// `--show-help` has opened the window once already.
+    static var shownAtLaunch = false
     private var window: NSWindow?
 
     func show() {
