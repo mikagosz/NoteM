@@ -127,9 +127,10 @@ nonisolated enum StorageLocation {
     /// The single source of truth for the local root: `NoteStore` takes its
     /// default from here rather than computing the same path again.
     static var localRoot: URL {
-        overriddenRoot(defaultsKey: "NoteMStoreRoot", environmentKey: "NOTEM_STORE_ROOT")
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("NoteM", isDirectory: true)
+        NoteStoreReading.localRoot(
+            redirectedPath: redirection(defaultsKey: storeRootKey, environmentKey: storeRootEnvironmentKey)?.path,
+            documents: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        )
     }
 
     /// iCloud Drive's user-visible folder (`~/Library/Mobile Documents/…/NoteM`),
@@ -138,13 +139,10 @@ nonisolated enum StorageLocation {
     /// A redirect applies here too — otherwise turning sync on inside a test copy
     /// would reach straight back into the real iCloud Drive.
     static var iCloudRoot: URL? {
-        if let redirected = overriddenRoot(defaultsKey: "NoteMStoreRoot", environmentKey: "NOTEM_STORE_ROOT") {
-            return redirected.deletingLastPathComponent().appendingPathComponent("NoteM-iCloud", isDirectory: true)
-        }
-        let base = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: base.path) else { return nil }
-        return base.appendingPathComponent("NoteM", isDirectory: true)
+        NoteStoreReading.iCloudRoot(
+            redirectedPath: redirection(defaultsKey: storeRootKey, environmentKey: storeRootEnvironmentKey)?.path,
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
     }
 
     /// Where unsaved quick notes wait between launches (`QuickCaptureDraft`).
@@ -178,8 +176,7 @@ nonisolated enum StorageLocation {
     /// The root to use for the given sync preference; falls back to local when
     /// iCloud isn't available.
     static func root(syncEnabled: Bool) -> URL {
-        if syncEnabled, let iCloud = iCloudRoot { return iCloud }
-        return localRoot
+        NoteStoreReading.root(syncEnabled: syncEnabled, local: localRoot, iCloud: iCloudRoot)
     }
 
     /// Hides the store folder in Finder when it lives in iCloud Drive, so it
