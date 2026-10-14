@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // The Help window: a big title, then sections with a picture of the app on one side and the steps on the
@@ -49,34 +50,44 @@ enum HelpSample {
 
     private static func t(_ pl: String, _ en: String) -> String { Loc.t(pl, en) }
 
-    /// Runs `make` with the sample settings, notes and settings store, then removes the store and folder.
-    static func with<T>(_ make: @MainActor (AppSettings, NotesModel, UserDefaults, URL) -> T) -> T {
-        let defaults = UserDefaults(suiteName: suite) ?? .standard
-        defaults.removePersistentDomain(forName: suite)
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("NoteM-help-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer {
+    /// The sample settings, notes and settings store, alive until `end()` removes the store and folder.
+    /// A class rather than a closure: the pictures are drawn one by one, with the run loop free in between.
+    @MainActor
+    final class Session {
+        let settings: AppSettings
+        let model: NotesModel
+        let defaults: UserDefaults
+        let root: URL
+
+        init() {
+            defaults = UserDefaults(suiteName: suite) ?? .standard
+            defaults.removePersistentDomain(forName: suite)
+            root = FileManager.default.temporaryDirectory.appendingPathComponent("NoteM-help-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let settings = AppSettings(defaults: defaults)
+            settings.rules = [
+                CategoryRule(keyword: t("faktura", "invoice"), targetFolderPattern: t("Finanse", "Finance"), priority: 0),
+                CategoryRule(keyword: t("spotkanie", "meeting"), targetFolderPattern: t("Praca", "Work"), priority: 1),
+                CategoryRule(keyword: t("przepis", "recipe"), targetFolderPattern: t("Dom", "Home"), priority: 2),
+            ]
+            settings.smartFolders = [SmartFolder(id: UUID(), name: t("Pomysły", "Ideas"), icon: "lightbulb",
+                                                 conditions: [.tagContains(t("pomysł", "idea"))], conjunctive: true)]
+            settings.quickCaptureEnabled = true
+            settings.obsidianConnected = true
+            // Copies are never sent from the sample: no vault is written to, real or made up.
+            settings.obsidianAutoExport = false
+            settings.obsidianFolderPath = vaultPath
+            self.settings = settings
+
+            model = NotesModel(store: NoteStore(rootURL: root), loadNow: false)
+            model.rulesProvider = { settings.rules }
+            fill(model)
+        }
+
+        func end() {
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: root)
         }
-        let settings = AppSettings(defaults: defaults)
-        settings.rules = [
-            CategoryRule(keyword: t("faktura", "invoice"), targetFolderPattern: t("Finanse", "Finance"), priority: 0),
-            CategoryRule(keyword: t("spotkanie", "meeting"), targetFolderPattern: t("Praca", "Work"), priority: 1),
-            CategoryRule(keyword: t("przepis", "recipe"), targetFolderPattern: t("Dom", "Home"), priority: 2),
-        ]
-        settings.smartFolders = [SmartFolder(id: UUID(), name: t("Pomysły", "Ideas"), icon: "lightbulb",
-                                             conditions: [.tagContains(t("pomysł", "idea"))], conjunctive: true)]
-        settings.quickCaptureEnabled = true
-        settings.obsidianConnected = true
-        // Copies are never sent from the sample: no vault is written to, real or made up.
-        settings.obsidianAutoExport = false
-        settings.obsidianFolderPath = vaultPath
-
-        let model = NotesModel(store: NoteStore(rootURL: root), loadNow: false)
-        model.rulesProvider = { settings.rules }
-        fill(model)
-        return make(settings, model, defaults, root)
     }
 
     /// The sample notes, oldest first, so the list reads newest on top.
@@ -124,45 +135,124 @@ enum HelpSample {
     }
 }
 
-/// Bitmaps of the app's own windows on sample data, made when the Help window opens.
+/// Bitmaps of the app's own windows on sample data, one per kind of picture.
 @MainActor
 struct HelpPictures {
-    let main: NSImage
-    let note: NSImage
-    let palette: NSImage
-    let tasks: NSImage
-    let quick: NSImage
-    let filing: NSImage
-    let smartFolders: NSImage
-    let sync: NSImage
-    let obsidian: NSImage
+    var images: [HelpContent.Picture: NSImage] = [:]
+    subscript(_ p: HelpContent.Picture) -> NSImage? { images[p] }
 
     static let windowSize = NSSize(width: 1080, height: 680)
     static let settingsSize = NSSize(width: 700, height: 540)
     static let quickSize = NSSize(width: 360, height: 400)
 
+    /// All of them at once — for the export, which has no window to keep responsive.
     static func make() -> HelpPictures {
-        HelpSample.with { settings, model, defaults, root in
-            @MainActor func window(_ selection: SidebarSelection?, palette: Bool = false, title: String = "NoteM") -> NSImage {
-                Render.window(ContentView(settings: settings, model: model, sample: true, selection: selection, palette: palette)
-                                .defaultAppStorage(defaults),
-                              size: windowSize, titled: true, title: title, settle: 0.4)
-            }
-            @MainActor func pane(_ pane: SettingsPane) -> NSImage {
-                Render.window(SettingsView(settings: settings, model: model, pane: pane).defaultAppStorage(defaults),
-                              size: settingsSize, titled: true, title: pane.title(settings), settle: 0.15)
-            }
-            let meeting = HelpSample.meetingNote(in: model)
-            let note = meeting.map { SidebarSelection.note($0) }
-            let noteTitle = model.notes.first { $0.id == meeting }?.title ?? "NoteM"
-            let quick = QuickCaptureView(draft: HelpSample.draft(in: root), onSave: { _, _, _, _ in }, onClose: {},
-                                         obsidianConnected: true)
-            return HelpPictures(main: window(.home), note: window(note, title: noteTitle), palette: window(.home, palette: true),
-                                tasks: window(.tasks),
-                                quick: Render.window(quick.defaultAppStorage(defaults), size: quickSize, titled: true, fullSize: false, settle: 0.2),
-                                filing: pane(.categorization), smartFolders: pane(.smartFolders),
-                                sync: pane(.sync), obsidian: pane(.obsidian))
+        let session = HelpSample.Session()
+        defer { session.end() }
+        var p = HelpPictures()
+        for kind in HelpContent.Picture.allCases { p.images[kind] = draw(kind, in: session) }
+        return p
+    }
+
+    static func draw(_ kind: HelpContent.Picture, in s: HelpSample.Session) -> NSImage {
+        func window(_ selection: SidebarSelection?, palette: Bool = false, title: String = "NoteM") -> NSImage {
+            Render.window(ContentView(settings: s.settings, model: s.model, sample: true, selection: selection, palette: palette)
+                            .defaultAppStorage(s.defaults),
+                          size: windowSize, titled: true, title: title, settle: 0.4)
         }
+        func pane(_ pane: SettingsPane) -> NSImage {
+            Render.window(SettingsView(settings: s.settings, model: s.model, pane: pane).defaultAppStorage(s.defaults),
+                          size: settingsSize, titled: true, title: pane.title(s.settings), settle: 0.15)
+        }
+        switch kind {
+        case .main: return window(.home)
+        case .note:
+            let meeting = HelpSample.meetingNote(in: s.model)
+            return window(meeting.map { SidebarSelection.note($0) },
+                          title: s.model.notes.first { $0.id == meeting }?.title ?? "NoteM")
+        case .palette: return window(.home, palette: true)
+        case .tasks: return window(.tasks)
+        case .quick:
+            let quick = QuickCaptureView(draft: HelpSample.draft(in: s.root), onSave: { _, _, _, _ in }, onClose: {},
+                                         obsidianConnected: true)
+            return Render.window(quick.defaultAppStorage(s.defaults), size: quickSize, titled: true, fullSize: false, settle: 0.2)
+        case .filing: return pane(.categorization)
+        case .smartFolders: return pane(.smartFolders)
+        case .sync: return pane(.sync)
+        case .obsidian: return pane(.obsidian)
+        }
+    }
+}
+
+/// The pictures for the Help window: taken from the cache at once, the missing ones drawn one by one with the
+/// run loop free in between, so the page is there to read straight away and the pictures fill in.
+/// Kept for the app's lifetime and on disk, per version, language and light or dark: drawn once, not at every open.
+@MainActor
+final class HelpPictureStore: ObservableObject {
+    static let shared = HelpPictureStore()
+    @Published private(set) var pictures = HelpPictures()
+    private var key = ""
+    private var drawing = false
+
+    func load() {
+        let key = Self.cacheKey
+        if key != self.key { self.key = key; pictures = HelpPictures() }
+        guard !drawing else { return }
+        let folder = Self.cacheFolder(key)
+        for kind in HelpContent.Picture.allCases where pictures[kind] == nil {
+            if let image = Self.read(folder.appendingPathComponent("\(kind).png")) { pictures.images[kind] = image }
+        }
+        let missing = HelpContent.Picture.allCases.filter { pictures[$0] == nil }
+        guard !missing.isEmpty else { return }
+        drawing = true
+        Task { @MainActor in
+            let session = HelpSample.Session()
+            for kind in missing {
+                // A moment for the window to draw and take a click before the next picture holds the run loop.
+                try? await Task.sleep(for: .milliseconds(30))
+                let image = HelpPictures.draw(kind, in: session)
+                pictures.images[kind] = image
+                Self.write(image, folder.appendingPathComponent("\(kind).png"))
+            }
+            session.end()
+            drawing = false
+        }
+    }
+
+    private static var cacheKey: String {
+        let info = Bundle.main.infoDictionary
+        let version = "\(info?["CFBundleShortVersionString"] ?? "")-\(info?["CFBundleVersion"] ?? "")"
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return "\(version)-\(Loc.language.rawValue)-\(dark ? "dark" : "light")"
+    }
+
+    /// `~/Library/Caches/<bundle ID>/HelpPictures/<key>`; folders of other keys are removed.
+    private static func cacheFolder(_ key: String) -> URL {
+        let fm = FileManager.default
+        let base = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "NoteM", isDirectory: true)
+            .appendingPathComponent("HelpPictures", isDirectory: true)
+        for old in (try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil)) ?? [] where old.lastPathComponent != key {
+            try? fm.removeItem(at: old)
+        }
+        let folder = base.appendingPathComponent(key, isDirectory: true)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    /// Saved at twice the size; read back at the size in points.
+    private static func read(_ url: URL) -> NSImage? {
+        guard let rep = NSImageRep(contentsOf: url) else { return nil }
+        rep.size = NSSize(width: CGFloat(rep.pixelsWide) / 2, height: CGFloat(rep.pixelsHigh) / 2)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    private static func write(_ image: NSImage, _ url: URL) {
+        guard let rep = image.representations.first as? NSBitmapImageRep,
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url, options: .atomic)
     }
 }
 
@@ -231,22 +321,13 @@ extension NSImage {
 
 // MARK: - The page
 
-/// The window's content: a spinner while the pictures are drawn, then the page.
+/// The window's content: the page at once, its pictures filling in as they are ready.
 private struct HelpRoot: View {
-    @State private var pictures: HelpPictures?
+    @ObservedObject private var store = HelpPictureStore.shared
 
     var body: some View {
-        if let pictures {
-            HelpPage(pictures: pictures)
-        } else {
-            ProgressView()
-                .frame(width: HelpPage.width, height: HelpPage.height)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .onAppear {
-                    // A moment later, so the window with the spinner is drawn before the run loop is held.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { pictures = HelpPictures.make() }
-                }
-        }
+        HelpPage(pictures: store.pictures)
+            .onAppear { store.load() }
     }
 }
 
@@ -293,7 +374,7 @@ struct HelpPage: View {
                 .multilineTextAlignment(.center).lineSpacing(4)
                 .frame(maxWidth: 640)
                 .fixedSize(horizontal: false, vertical: true)
-            WindowPicture(image: pictures.main, crop: Crop(rect: CGRect(origin: .zero, size: HelpPictures.windowSize), points: []),
+            WindowPicture(image: pictures[.main], crop: Crop(rect: CGRect(origin: .zero, size: HelpPictures.windowSize), points: []),
                           maxWidth: 840)
                 .padding(.top, 8)
         }
@@ -352,15 +433,15 @@ private struct HelpSectionView: View {
     private var picture: some View {
         Group {
             switch section.picture {
-            case .main: WindowPicture(image: pictures.main, crop: HelpCrops.main, maxWidth: 840)
-            case .note: WindowPicture(image: pictures.note, crop: HelpCrops.note, maxWidth: 840)
-            case .palette: WindowPicture(image: pictures.palette, crop: HelpCrops.palette)
-            case .quick: WindowPicture(image: pictures.quick, crop: HelpCrops.quick)
-            case .tasks: WindowPicture(image: pictures.tasks, crop: HelpCrops.tasks, maxWidth: 840)
-            case .filing: WindowPicture(image: pictures.filing, crop: HelpCrops.filing)
-            case .smartFolders: WindowPicture(image: pictures.smartFolders, crop: HelpCrops.smartFolders)
-            case .sync: WindowPicture(image: pictures.sync, crop: HelpCrops.sync)
-            case .obsidian: WindowPicture(image: pictures.obsidian, crop: HelpCrops.obsidian)
+            case .main: WindowPicture(image: pictures[.main], crop: HelpCrops.main, maxWidth: 840)
+            case .note: WindowPicture(image: pictures[.note], crop: HelpCrops.note, maxWidth: 840)
+            case .palette: WindowPicture(image: pictures[.palette], crop: HelpCrops.palette)
+            case .quick: WindowPicture(image: pictures[.quick], crop: HelpCrops.quick)
+            case .tasks: WindowPicture(image: pictures[.tasks], crop: HelpCrops.tasks, maxWidth: 840)
+            case .filing: WindowPicture(image: pictures[.filing], crop: HelpCrops.filing)
+            case .smartFolders: WindowPicture(image: pictures[.smartFolders], crop: HelpCrops.smartFolders)
+            case .sync: WindowPicture(image: pictures[.sync], crop: HelpCrops.sync)
+            case .obsidian: WindowPicture(image: pictures[.obsidian], crop: HelpCrops.obsidian)
             }
         }
         .frame(width: wide ? nil : 440)
@@ -437,7 +518,8 @@ enum HelpCrops {
 /// A window picture in a section: the cut-out, its frame and the numbered points.
 /// Never enlarged beyond 1:1 — bigger than the window it would look like a screenshot under a magnifier.
 struct WindowPicture: View {
-    let image: NSImage
+    /// Nil while the picture is still being drawn: a blank frame of the same size with a spinner.
+    let image: NSImage?
     let crop: Crop
     var maxWidth: CGFloat = 440
     private let margin: CGFloat = 36
@@ -451,7 +533,11 @@ struct WindowPicture: View {
         Frame {
             HStack(spacing: 0) {
                 Color.clear.frame(width: left, height: h)
-                Image(nsImage: image.cutOut(r)).resizable().interpolation(.high).frame(width: w, height: h)
+                if let image {
+                    Image(nsImage: image.cutOut(r)).resizable().interpolation(.high).frame(width: w, height: h)
+                } else {
+                    ProgressView().controlSize(.small).frame(width: w, height: h)
+                }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .overlay(alignment: .topLeading) {
@@ -579,10 +665,8 @@ enum HelpExport {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let lang = Loc.language.rawValue
             let p = HelpPictures.make()
-            let all = [("main", p.main), ("note", p.note), ("palette", p.palette), ("tasks", p.tasks), ("quick", p.quick),
-                       ("filing", p.filing), ("smart", p.smartFolders), ("sync", p.sync), ("obsidian", p.obsidian)]
-            for (name, image) in all {
-                save(image, folder.appendingPathComponent("window-\(name)-\(lang).png"))
+            for kind in HelpContent.Picture.allCases {
+                if let image = p[kind] { save(image, folder.appendingPathComponent("window-\(kind)-\(lang).png")) }
             }
             let page = HelpPage(pictures: p, wholePage: true)
             // The height measured at the fixed width — `fittingSize` measures without it and cuts the top and bottom off.

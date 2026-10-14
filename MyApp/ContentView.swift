@@ -581,6 +581,7 @@ struct ContentView: View {
     var sample = false
 
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selection: SidebarSelection?
     /// Active filter on the notes list (tag, folder, or smart folder).
     @State private var noteFilter: NoteListFilter?
@@ -926,6 +927,9 @@ struct ContentView: View {
                     .help(settings.t("Nowa notatka", "New note"))
                 }
             }
+            // A Help picture is drawn off screen, where the sidebar's vibrant text is never mixed with its backdrop
+            // by the window server and comes out nearly black: there it gets a plain colour.
+            .foregroundStyle(sample ? AnyShapeStyle(colorScheme == .dark ? Color.white : Color.black) : AnyShapeStyle(.primary))
         } detail: {
             Group {
             switch selection {

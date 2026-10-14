@@ -11,7 +11,7 @@ nonisolated enum HelpContent {
     }
 
     /// Which picture stands next to the section; drawn by the app itself in HelpWindow.swift.
-    enum Picture { case main, note, palette, quick, tasks, filing, smartFolders, sync, obsidian }
+    enum Picture: CaseIterable { case main, note, palette, quick, tasks, filing, smartFolders, sync, obsidian }
 
     struct Section {
         let title: Text
