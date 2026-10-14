@@ -130,6 +130,8 @@ extension View {
 /// below used to walk the view tree of **every** open window on every step of a
 /// resize drag, and once per sidebar badge change (E3-P2-03).
 @MainActor func applyThinScrollers(in window: NSWindow?) {
+    // The Help page is a long document: it keeps the system scroll bar, so its length shows.
+    if window?.identifier == HelpWindow.identifier { return }
     func walk(_ view: NSView?) {
         guard let view else { return }
         if let scroll = view as? NSScrollView { applyThinScroller(to: scroll) }

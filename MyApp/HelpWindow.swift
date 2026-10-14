@@ -12,6 +12,8 @@ import SwiftUI
 @MainActor
 final class HelpWindow {
     static let shared = HelpWindow()
+    /// Left out of the app's invisible scroll bars (`applyThinScrollers`).
+    static let identifier = NSUserInterfaceItemIdentifier("NoteMHelp")
     private var window: NSWindow?
 
     func show() {
@@ -19,8 +21,11 @@ final class HelpWindow {
             let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable, .miniaturizable],
                              backing: .buffered, defer: false)
             w.title = HelpContent.windowTitle.current
+            w.identifier = Self.identifier
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: HelpPage(pictures: HelpPictures.make()))
+            // The window first, the pictures after it is on screen: drawing them takes a couple of
+            // seconds, and with the window still closed the click on Help looked like a hang.
+            w.contentView = NSHostingView(rootView: HelpRoot())
             // A fixed height: an `idealHeight` alone gave the window 432 pt (measured in DeskMount 0.1.50).
             w.setContentSize(NSSize(width: HelpPage.width, height: HelpPage.height))
             w.center()
@@ -223,6 +228,25 @@ extension NSImage {
 }
 
 // MARK: - The page
+
+/// The window's content: a spinner while the pictures are drawn, then the page.
+private struct HelpRoot: View {
+    @State private var pictures: HelpPictures?
+
+    var body: some View {
+        if let pictures {
+            HelpPage(pictures: pictures)
+        } else {
+            ProgressView()
+                .frame(width: HelpPage.width, height: HelpPage.height)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .onAppear {
+                    // A moment later, so the window with the spinner is drawn before the run loop is held.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { pictures = HelpPictures.make() }
+                }
+        }
+    }
+}
 
 struct HelpPage: View {
     static let width: CGFloat = 960
