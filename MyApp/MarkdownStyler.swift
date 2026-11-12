@@ -147,9 +147,11 @@ enum MarkdownStyler {
         // Inline image: ![alt](attachments/filename)
         if line.hasPrefix("!["), let parenOpen = line.firstIndex(of: "("), let parenClose = line.lastIndex(of: ")") {
             let path = String(line[line.index(after: parenOpen)..<parenClose])
-            if path.hasPrefix("attachments/"), let folder = noteFolder {
-                let fileURL = folder.appendingPathComponent(path)
-                if let image = NSImage(contentsOf: fileURL) {
+            // Only a plain file inside `attachments/` — a pasted `attachments/../…` used to
+            // load a picture from anywhere on the disk into the note (D-B-P0-01).
+            if let name = AttachmentPath.filename(fromTarget: path), let folder = noteFolder {
+                let fileURL = folder.appendingPathComponent(AttachmentPath.prefix + name)
+                if let image = ThumbnailCache.displayImage(at: fileURL) {
                     // FittingTextAttachment clamps to the column width at layout time.
                     let attachment = FittingTextAttachment()
                     attachment.image = image
@@ -334,7 +336,7 @@ enum MarkdownStyler {
             // Checkbox attachments carry no filename (and their paragraph is
             // handled by the checklist branch above), so they never match here.
             if attrs[.attachment] != nil, let name = attrs[.noteMAttachmentName] as? String {
-                result += "![](attachments/\(name))"
+                result += "![](\(AttachmentPath.markdownTarget(for: name)))"
                 index = NSMaxRange(range)
                 continue
             }
@@ -378,9 +380,11 @@ enum MarkdownStyler {
         let regex = try! NSRegularExpression(pattern: "attachments/([^)\\n]+)")
         var names: [String] = []
         for match in regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
-            let name = ns.substring(with: match.range(at: 1))
-                .trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty { names.append(name) }
+            // Decoded the same way it was written (`AttachmentPath.markdownTarget`), so a
+            // "Faktura (1).pdf" written as `Faktura %281%29.pdf` is found under its real name.
+            if let name = AttachmentPath.filename(fromEncoded: ns.substring(with: match.range(at: 1))) {
+                names.append(name)
+            }
         }
         return names
     }

@@ -25,6 +25,12 @@ import Foundation
 /// first, and that is where a browser's images actually come from.
 enum HTMLPasteGuard {
 
+    /// Largest HTML the paste imports with its formatting. The system importer runs on the
+    /// main thread at about 1.4 s per megabyte (this guard adds 0.2 s): 16 MB froze the
+    /// window for 22 s, 42 MB for 65 s (dynamic audit 2026-11-12, D-S-P3-03). Above the
+    /// limit — a whole web page or spreadsheet — the text goes in without the page's styling.
+    nonisolated static let maxImportBytes = 2_000_000
+
     /// The only way HTML gets into the editor. Both paste paths (⌘V and
     /// ⌥⇧⌘V) go through here, so the guard cannot be forgotten at a call site —
     /// there is no longer a call site to forget it at.

@@ -877,7 +877,7 @@ final class NotesModel {
         // Drop attachment files the user removed from the note (only when the
         // caller supplied the still-referenced set, i.e. from the full editor).
         if let referencedAttachments {
-            store.pruneAttachments(for: saved, keeping: referencedAttachments)
+            store.pruneAttachments(for: saved, keeping: referencedAttachments, markdown: content)
         }
 
         notes[index] = saved

@@ -129,6 +129,34 @@ nonisolated enum NoteStoreReading {
         return decoder
     }
 
+    /// A folder path relative to the store that provably stays inside it: no `..`, no
+    /// empty or `.` components (a leading `/` is dropped, as `appendingPathComponent`
+    /// did anyway). `nil` when it would climb out.
+    ///
+    /// `originalFolderPath` comes from `meta.json`, which iCloud brings from another Mac:
+    /// with `../` in it, "Restore" moved the note's folder out of the store, and the note
+    /// vanished from NoteM without a word (dynamic audit 2026-11-12, D-S-P2-02).
+    static func confinedFolderPath(_ path: String) -> String? {
+        let components = path.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
+        guard !components.isEmpty, !components.contains("..") else { return nil }
+        return components.joined(separator: "/")
+    }
+
+    /// Text of `note.md` from its bytes, also when they are not UTF-8: UTF-16 with a byte
+    /// order mark, otherwise UTF-8 with the bad bytes replaced.
+    ///
+    /// Reading such a file as UTF-8 failed, the note came up **empty**, and the first key
+    /// pressed saved that empty text over it (dynamic audit 2026-11-12, D-S-P2-01). The
+    /// original bytes still go to `.history` before that save — `NoteStore.snapshotContent`.
+    static func decodeContent(_ data: Data) -> (text: String, wasUTF8: Bool) {
+        if let text = String(data: data, encoding: .utf8) { return (text, true) }
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]),
+           let text = String(data: data, encoding: .utf16) {
+            return (text, false)
+        }
+        return (String(decoding: data, as: UTF8.self), false)
+    }
+
     /// Path of `folderURL` relative to `root`, or `nil` when it is not under it.
     static func relativePath(of folderURL: URL, under root: URL) -> String? {
         let rootComponents = root.standardizedFileURL.pathComponents

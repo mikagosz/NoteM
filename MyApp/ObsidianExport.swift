@@ -196,7 +196,11 @@ enum ObsidianExport {
     /// SBW audit 2026-09-23, E1-S-P1-02.
     static func removeMirror(relativePath: String, vaultFolder: URL, noteID: UUID,
                              ownedAttachments: [String]? = nil) {
-        let fileURL = vaultFolder.appendingPathComponent(relativePath)
+        // `relativePath` comes from `meta.json`, which iCloud brings from another Mac. With
+        // `../` in it the delete reached a file outside the vault whenever that file carried
+        // the note's `notem-id` (dynamic audit 2026-11-12, D-B-P3-01).
+        guard let confined = confinedVaultPath(relativePath) else { return }
+        let fileURL = vaultFolder.appendingPathComponent(confined)
         guard removeOwnedFile(at: fileURL, noteID: noteID) else { return }
         removeAttachments(Set(ownedAttachments ?? []), vaultFolder: vaultFolder)
     }
@@ -324,12 +328,10 @@ enum ObsidianExport {
         return (result, copied)
     }
 
+    /// The name has to stay a single file — no climbing out of the folder. Shared with the
+    /// HTML export and the display (`AttachmentPath`).
     private static func decoded(_ rawName: String) -> String? {
-        let trimmed = rawName.trimmingCharacters(in: .whitespaces)
-        let name = trimmed.removingPercentEncoding ?? trimmed
-        // The name has to stay a single file — no climbing out of the folder.
-        guard !name.isEmpty, !name.contains("/"), name != ".." else { return nil }
-        return name
+        AttachmentPath.filename(fromEncoded: rawName)
     }
 
     // MARK: - Filenames

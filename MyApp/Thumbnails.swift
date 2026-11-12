@@ -80,4 +80,42 @@ final class ThumbnailCache {
     /// How many thumbnails are held right now — the tests assert on this to show
     /// the cache is a cache and that the cap actually evicts.
     var count: Int { images.count }
+
+    // MARK: - Image shown inside a note
+
+    /// Largest side, in pixels, of a picture decoded for display in the editor.
+    nonisolated static let displayMaxPixels = 4096
+
+    /// The picture for an image inside a note — at most `displayMaxPixels` on its longer
+    /// side, at the **same size on screen** as `NSImage(contentsOf:)` would give.
+    ///
+    /// `NSImage(contentsOf:)` decoded every pixel: an 875 KB PNG of 30 000 × 30 000 took
+    /// 1 068 MB once drawn (dynamic audit 2026-11-12, D-S-P3-02). Anything up to the limit —
+    /// every ordinary photo and screenshot — is decoded whole, exactly as before. The point
+    /// size comes from the file's own resolution, so a retina screenshot keeps its size.
+    nonisolated static func displayImage(at url: URL) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            return NSImage(contentsOf: url)
+        }
+        let longest = max(width, height)
+        guard longest > displayMaxPixels else { return NSImage(contentsOf: url) }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: displayMaxPixels
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        // Points the way NSImage counts them: pixels × 72 / dpi (72 when the file says nothing).
+        let dpi = (properties[kCGImagePropertyDPIWidth] as? Double).flatMap { $0 > 0 ? $0 : nil } ?? 72
+        // EXIF rotation (`WithTransform`) can swap the sides relative to the stored pixels.
+        let swapped = (cgImage.width >= cgImage.height) != (width >= height)
+        let pointWidth = Double(swapped ? height : width) * 72 / dpi
+        let pointHeight = Double(swapped ? width : height) * 72 / dpi
+        return NSImage(cgImage: cgImage, size: NSSize(width: pointWidth, height: pointHeight))
+    }
 }

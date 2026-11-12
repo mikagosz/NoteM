@@ -2246,7 +2246,8 @@ final class NoteTextView: NSTextView {
         // Through the guard, never straight into the importer: the system HTML
         // reader fetches whatever the document points at, and a paste has no
         // business opening a connection. See `HTMLPasteGuard`.
-        if let data = pasteboard.data(forType: .html),
+        // Up to `maxImportBytes` only — beyond it the paste goes in as plain text below.
+        if let data = pasteboard.data(forType: .html), data.count <= HTMLPasteGuard.maxImportBytes,
            let attributed = HTMLPasteGuard.attributedString(fromPastedHTML: data) {
             insertExternal(attributed)
             return true
@@ -2288,7 +2289,7 @@ final class NoteTextView: NSTextView {
             source = NSAttributedString(rtfd: data, documentAttributes: nil)
         } else if let data = pasteboard.data(forType: .rtf) {
             source = NSAttributedString(rtf: data, documentAttributes: nil)
-        } else if let data = pasteboard.data(forType: .html) {
+        } else if let data = pasteboard.data(forType: .html), data.count <= HTMLPasteGuard.maxImportBytes {
             // Same guard as in `paste(_:)`. `PasteSanitizer` below cannot help
             // here — it runs on the finished attributed string, by which time the
             // request has already gone out.
@@ -2344,8 +2345,8 @@ final class NoteTextView: NSTextView {
                 .contains(url.pathExtension.lowercased())
 
             if isImage, let folder = controller?.noteFolder {
-                let imageURL = folder.appendingPathComponent("attachments/\(filename)")
-                if let image = NSImage(contentsOf: imageURL) {
+                let imageURL = folder.appendingPathComponent(AttachmentPath.prefix + filename)
+                if let image = ThumbnailCache.displayImage(at: imageURL) {
                     // FittingTextAttachment clamps itself to the column width at
                     // layout time, so no manual sizing is needed here.
                     let attachment = FittingTextAttachment()
@@ -2365,8 +2366,8 @@ final class NoteTextView: NSTextView {
                 }
             }
             let link = isImage
-                ? "![](attachments/\(filename))"
-                : "[\(url.lastPathComponent)](attachments/\(filename))"
+                ? "![](\(AttachmentPath.markdownTarget(for: filename)))"
+                : "[\(AttachmentPath.linkLabel(for: url.lastPathComponent))](\(AttachmentPath.markdownTarget(for: filename)))"
             insertAttributed(NSAttributedString(string: link, attributes: MarkdownStyler.defaultTypingAttributes))
         }
     }

@@ -257,7 +257,18 @@ final class NoteStore {
             return nil
         }
 
-        let target = note.originalFolderPath ?? (CategoryEngine.inbox + "/" + note.id.uuidString)
+        let fallback = CategoryEngine.inbox + "/" + note.id.uuidString
+        var target = fallback
+        if let original = note.originalFolderPath {
+            if let confined = NoteStoreReading.confinedFolderPath(original) {
+                target = confined
+            } else {
+                // A path that would leave the store (D-S-P2-02): restore into Inbox and say why.
+                Log.failure(.folderOutsideStore)
+                onDataError?(Loc.t("Notatka „\(note.title)” miała zapisany folder poza magazynem (\(original)) — przywrócona do Inbox",
+                                   "“\(note.title)” recorded a folder outside the store (\(original)) — restored to Inbox"))
+            }
+        }
         var finalPath = target
         var destination = url(forFolderPath: finalPath)
         guard ensureDirectory(at: destination.deletingLastPathComponent()) else { return nil }
@@ -297,13 +308,20 @@ final class NoteStore {
     func moveNote(_ note: Note, toFolderPath newFolderPath: String) -> Note? {
         let source = url(forFolderPath: note.folderPath)
         guard fileManager.fileExists(atPath: source.path) else { return nil }
+        // Same rule as restoring (D-S-P2-02): a target that would leave the store is refused.
+        guard let confinedTarget = NoteStoreReading.confinedFolderPath(newFolderPath) else {
+            Log.failure(.folderOutsideStore)
+            onDataError?(Loc.t("Nie przeniesiono notatki „\(note.title)” — folder \(newFolderPath) leży poza magazynem",
+                               "“\(note.title)” was not moved — folder \(newFolderPath) lies outside the store"))
+            return nil
+        }
 
-        var finalPath = newFolderPath
+        var finalPath = confinedTarget
         var destination = url(forFolderPath: finalPath)
         guard ensureDirectory(at: destination.deletingLastPathComponent()) else { return nil }
         // Disambiguate if something already sits at the destination.
         if fileManager.fileExists(atPath: destination.path) {
-            finalPath = newFolderPath + "-" + note.id.uuidString.prefix(8)
+            finalPath = confinedTarget + "-" + note.id.uuidString.prefix(8)
             destination = url(forFolderPath: finalPath)
         }
 
@@ -344,8 +362,20 @@ final class NoteStore {
     /// Reads the `note.md` content for a given note, or an empty string if
     /// none is present.
     func loadContent(for note: Note) -> String {
-        NoteStoreReading.readContent(of: note, root: rootURL) ?? ""
+        let url = url(forFolderPath: note.folderPath).appendingPathComponent(FileName.content)
+        guard let data = try? Data(contentsOf: url) else { return "" }
+        let decoded = NoteStoreReading.decodeContent(data)
+        if !decoded.wasUTF8, reportedEncoding.insert(note.id).inserted {
+            onDataError?(Loc.t(
+                "Tekst notatki „\(note.title)” nie był zapisany w UTF-8 — pokazany z zamianą nieczytelnych znaków; oryginał trafi do historii przy następnym zapisie",
+                "The text of “\(note.title)” was not saved as UTF-8 — shown with unreadable characters replaced; the original goes to the history on the next save"))
+        }
+        return decoded.text
     }
+
+    /// Notes whose non-UTF-8 text has already been reported — once per note and launch,
+    /// not on every read (search and the list read the text often).
+    private var reportedEncoding: Set<UUID> = []
 
     /// Reads the full-fidelity `note.rich` archive, or `nil` if the note predates
     /// rich storage (in which case the caller rebuilds from `note.md`).
@@ -406,7 +436,12 @@ final class NoteStore {
     /// so images the user removed from a note also leave the "Attachments" view.
     /// The image bytes still live in `note.rich`, so this only drops the now
     /// redundant standalone file.
-    func pruneAttachments(for note: Note, keeping names: Set<String>) {
+    ///
+    /// `markdown`, when given, is a second guard: a file whose name appears literally after
+    /// `attachments/` is kept even if the name list missed it. Notes written before 1.1.10
+    /// carry names like "Faktura (1).pdf" unescaped, and the list cut those at the `)` —
+    /// the file was deleted on the next save (dynamic audit 2026-11-12, D-S-P1-01).
+    func pruneAttachments(for note: Note, keeping names: Set<String>, markdown: String? = nil) {
         let dir = url(forFolderPath: note.folderPath)
             .appendingPathComponent("attachments", isDirectory: true)
         guard let items = try? fileManager.contentsOfDirectory(
@@ -416,6 +451,7 @@ final class NoteStore {
         ) else { return }
         var removedAny = false
         for item in items where !names.contains(item.lastPathComponent) {
+            if let markdown, markdown.contains(AttachmentPath.prefix + item.lastPathComponent) { continue }
             let removed = write(.attachmentRemove, Loc.t("Nie udało się usunąć nieużywanego załącznika „\(item.lastPathComponent)”",
                                       "Could not remove the unused attachment “\(item.lastPathComponent)”")) {
                 try fileManager.removeItem(at: item)

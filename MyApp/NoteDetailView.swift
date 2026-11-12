@@ -338,6 +338,13 @@ struct NoteDetailView: View {
         let fromMarkdown = { MarkdownStyler.attributedString(fromMarkdown: markdown, noteFolder: noteFolder) }
         if let data = model.richContent(for: note) {
             switch NoteRichArchive.read(data) {
+            case .decoded(let attributed) where attributed.length == 0
+                && !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                // A damaged archive can still decode — to an empty text — while note.md has
+                // the words. Showing the empty archive made the note look blank, and typing
+                // saved the blank over note.md (dynamic audit 2026-11-12, D-S-P3-01).
+                controller.setContent(fromMarkdown())
+                formattingRebuilt = true
             case .decoded(let attributed):
                 controller.setContent(attributed)
             case .refused:

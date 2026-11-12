@@ -255,11 +255,10 @@ enum HTMLExport {
     }
 
     /// Filename when the target points into the note's `attachments/` folder.
+    /// `nil` also for a target that could climb out of the folder — see `AttachmentPath`
+    /// (dynamic audit 2026-11-12, D-B-P0-01).
     private static func attachmentName(_ src: String) -> String? {
-        guard src.hasPrefix("attachments/") else { return nil }
-        let name = String(src.dropFirst("attachments/".count))
-            .removingPercentEncoding ?? String(src.dropFirst("attachments/".count))
-        return name.isEmpty ? nil : name
+        AttachmentPath.filename(fromTarget: src)
     }
 
     private static func imageMime(_ filename: String) -> String? {
