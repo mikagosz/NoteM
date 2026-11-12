@@ -167,9 +167,7 @@ struct QuickCaptureStagingTests {
 
     /// A real file to stage, in its own temporary folder.
     private func sampleFile(named name: String, bytes: [UInt8] = [0x01, 0x02]) throws -> URL {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = TestScratch.folder("szybka")
         let url = folder.appendingPathComponent(name)
         try Data(bytes).write(to: url)
         return url

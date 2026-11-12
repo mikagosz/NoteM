@@ -15,9 +15,7 @@ struct NotesModelObsidianStampTests {
     /// A model on a throwaway store, plus a throwaway vault folder.
     private func makeModel(autoExport: Bool) -> (model: NotesModel, temp: TempStore, vault: URL) {
         let temp = TempStore()
-        let vault = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMStampTests-" + UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+        let vault = TestScratch.folder("sejf")
 
         let model = NotesModel(store: temp.store)
         model.obsidianConfigProvider = { (autoExport, vault) }
@@ -36,7 +34,10 @@ struct NotesModelObsidianStampTests {
     // MARK: 1. Manual bridge: restoring clears the stamp, because the copy stays gone
 
     @Test func restoreWithoutAutoExport_clearsTheStamp() throws {
-        let (model, _, _) = makeModel(autoExport: false)
+        let (model, temp, _) = makeModel(autoExport: false)
+        // Kept alive to the end: dropped with `_`, the store's folder was removed at once
+        // and quietly recreated by the model — and then nobody removed it.
+        defer { withExtendedLifetime(temp) {} }
         let note = makeExportedNote(in: model)
 
         model.delete(note)          // trashing deletes the copy in the vault
@@ -52,7 +53,8 @@ struct NotesModelObsidianStampTests {
     // MARK: 2. Automatic bridge: the copy comes back, so the stamp stays
 
     @Test func restoreWithAutoExport_keepsTheStampBecauseTheCopyIsBack() throws {
-        let (model, _, vault) = makeModel(autoExport: true)
+        let (model, temp, vault) = makeModel(autoExport: true)
+        defer { withExtendedLifetime(temp) {} }
         let note = makeExportedNote(in: model)
         let path = try #require(model.notes.first { $0.id == note.id }?.obsidianPath)
 
@@ -72,7 +74,8 @@ struct NotesModelObsidianStampTests {
     // MARK: 3. A note never sent passes through the trash unchanged
 
     @Test func restoreOfANeverExportedNote_changesNothing() throws {
-        let (model, _, _) = makeModel(autoExport: false)
+        let (model, temp, _) = makeModel(autoExport: false)
+        defer { withExtendedLifetime(temp) {} }
         let note = model.createNote(content: "Never sent")
         #expect(model.notes.first { $0.id == note.id }?.obsidianPath == nil)
 

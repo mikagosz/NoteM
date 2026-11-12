@@ -11,8 +11,7 @@ struct ObsidianExportTests {
 
     /// A throwaway vault plus a note folder to export from.
     private func makeVault() -> (vault: URL, noteFolder: URL) {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMVaultTests-" + UUID().uuidString, isDirectory: true)
+        let base = TestScratch.folder("sejf")
         let vault = base.appendingPathComponent("Sejf", isDirectory: true)
         let noteFolder = base.appendingPathComponent("nota", isDirectory: true)
         try? FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)

@@ -8,9 +8,7 @@ import Testing
 struct SemanticIndexTests {
 
     private func tempURL() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMSemantic-" + UUID().uuidString, isDirectory: true)
-            .appendingPathComponent(NoteStore.semanticIndexFile)
+        TestScratch.folder("indeks").appendingPathComponent(NoteStore.semanticIndexFile)
     }
 
     /// Vectors are only ever computed by the embedding model, which is not

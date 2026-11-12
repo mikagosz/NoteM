@@ -12,8 +12,7 @@ final class TempStore {
     private(set) var errors: [String] = []
 
     init(name: String = UUID().uuidString) {
-        root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-" + name, isDirectory: true)
+        root = TestScratch.root.appendingPathComponent("magazyn-" + name, isDirectory: true)
         try? FileManager.default.removeItem(at: root)
         store = NoteStore(rootURL: root)
         store.onDataError = { [weak self] message in self?.errors.append(message) }
@@ -46,9 +45,7 @@ final class TempStore {
 
     /// A file to attach, created inside the temp area (not in the store).
     func makeSourceFile(named name: String, contents: String = "x") -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-src-" + UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = TestScratch.folder("src")
         let url = dir.appendingPathComponent(name)
         try? Data(contents.utf8).write(to: url)
         return url

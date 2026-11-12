@@ -17,9 +17,7 @@ struct ThumbnailCacheTests {
         image.unlockFocus()
         let data = image.tiffRepresentation!
         let png = NSBitmapImageRep(data: data)!.representation(using: .png, properties: [:])!
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-thumbs-" + UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = TestScratch.folder("thumbs")
         let url = dir.appendingPathComponent(name + ".png")
         try? png.write(to: url)
         return url
@@ -64,9 +62,7 @@ struct ThumbnailCacheTests {
 
     @Test func aFileThatIsNotAnImageGivesNothingBack() {
         ThumbnailCache.shared.clear()
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-thumbs-" + UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = TestScratch.folder("thumbs")
         let url = dir.appendingPathComponent("notatka.txt")
         try? Data("zwykły tekst".utf8).write(to: url)
         #expect(ThumbnailCache.shared.thumbnail(for: url, side: 32) == nil)

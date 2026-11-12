@@ -13,8 +13,7 @@ struct MarkdownStylerTests {
     /// A note folder holding one real PNG in `attachments/`, so image round-trips
     /// exercise the same path the app takes (the file has to load as an image).
     private func makeNoteFolder(imageNamed name: String) -> URL {
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-md-" + UUID().uuidString, isDirectory: true)
+        let folder = TestScratch.folder("md")
         let attachments = folder.appendingPathComponent("attachments", isDirectory: true)
         try? FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
         let image = NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in

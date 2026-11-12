@@ -166,7 +166,7 @@ struct DynamicAuditFixTests {
     }
 
     @Test func removingTheMirrorNeverLeavesTheVault() throws {
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent("NoteMTests-lustro-\(UUID())", isDirectory: true)
+        let base = TestScratch.folder("lustro")
         let vault = base.appendingPathComponent("sejf", isDirectory: true)
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
@@ -185,7 +185,7 @@ struct DynamicAuditFixTests {
     // MARK: - D-S-P3-02: huge pictures
 
     @Test func aHugePictureIsDecodedAtTheDisplayLimitButKeepsItsSize() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("NoteMTests-duzy-\(UUID()).png")
+        let url = TestScratch.folder("obraz").appendingPathComponent("duzy.png")
         try pngData(side: 5000).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         let image = try #require(ThumbnailCache.displayImage(at: url))
@@ -196,7 +196,7 @@ struct DynamicAuditFixTests {
     }
 
     @Test func anOrdinaryPictureIsDecodedAsBefore() throws {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("NoteMTests-maly-\(UUID()).png")
+        let url = TestScratch.folder("obraz").appendingPathComponent("maly.png")
         try pngData(side: 40).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         let image = try #require(ThumbnailCache.displayImage(at: url))

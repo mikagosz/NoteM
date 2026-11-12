@@ -17,9 +17,7 @@ struct StoreMoveTests {
     // MARK: - Scaffolding
 
     private func makeRoot(_ label: String) -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMMove-\(label)-" + UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let url = TestScratch.folder("przenosiny-\(label)")
         return url
     }
 

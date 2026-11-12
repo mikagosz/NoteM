@@ -10,8 +10,7 @@ struct QuickCaptureDraftTests {
 
     /// A drafts root of its own per test, in the temporary directory.
     private func tempRoot() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-brudnopisy-\(UUID().uuidString)", isDirectory: true)
+        TestScratch.root.appendingPathComponent("brudnopisy-\(UUID().uuidString)", isDirectory: true)
     }
 
     private func bold(_ text: String) -> NSAttributedString {
@@ -113,8 +112,7 @@ struct QuickCaptureDraftTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let draft = QuickCaptureDraft.new(in: root)
 
-        let source = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NoteMTests-\(UUID().uuidString).png")
+        let source = TestScratch.folder("src").appendingPathComponent("plik.png")
         try Data([0x01, 0x02]).write(to: source)
         defer { try? FileManager.default.removeItem(at: source) }
         let name = try #require(QuickCaptureStaging(folder: draft.folder).stage(source))
