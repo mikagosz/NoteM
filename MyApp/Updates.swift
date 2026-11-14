@@ -52,6 +52,9 @@ final class Updates: ObservableObject, ErrorUpdateDelegate {
     private static let interval: TimeInterval = 30 * 24 * 60 * 60
 
     private static let lastCheckKey = "updatesLastCheck"
+    /// The date ErrorUpdate writes after every check that really reached the server. Read only to
+    /// tell a real check from one the package answered from its one-hour cache.
+    private static let packageLastCheckKey = "ErrorUpdate_LastUpdateCheckDate"
     /// The key ErrorUpdate's own skipped-version store uses, so both remember the same version.
     private static let skippedKey = "ErrorUpdate_SkippedVersion"
 
@@ -138,13 +141,17 @@ final class Updates: ObservableObject, ErrorUpdateDelegate {
         lastError = nil
         // Not forced for the monthly check: only then does the package honour "Skip This Version"
         // and its guard against offering an update that already installed without effect.
-        await ErrorUpdateManager.shared.checkForUpdates(force: manually)
+        let packageCheckBefore = UserDefaults.standard.object(forKey: Self.packageLastCheckKey) as? Date
+        await ErrorUpdateManager.shared.checkForUpdates(manually ? .user : .automatic)
+        // The package may answer from its cache without asking the server. Recording that as a
+        // check would push the next real one a month away (not recorded since ErrorUpdate 1.0.10).
+        let serverAsked = (UserDefaults.standard.object(forKey: Self.packageLastCheckKey) as? Date) != packageCheckBefore
         guard let info = ErrorUpdateManager.shared.availableUpdate else {
             available = nil
             install = .idle
             checkError = lastError
             // A failed automatic check is tried again tomorrow, not in a month.
-            if lastError == nil { UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey) }
+            if lastError == nil && serverAsked { UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey) }
             if manually { showWindow() }
             return
         }

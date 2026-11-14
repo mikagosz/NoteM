@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mikagosz/ErrorUpdate.git",
       "state" : {
-        "revision" : "a4b9d71c628df7fe692358d270ba751bce384dc7",
-        "version" : "1.0.1"
+        "revision" : "3d201e27e74fd99261a492f19928c133940bb30f",
+        "version" : "1.0.10"
       }
     }
   ],
